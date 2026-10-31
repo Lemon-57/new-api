@@ -49,6 +49,14 @@ unique provider transaction number prevents one payment from fulfilling two orde
 Completion locks the order and updates its native receipt and wallet/subscription
 atomically. Existing quota safety checks and cache delta paths are reused.
 
+Refund preparation now persists an `AlipayRefundRecord` before calling the
+provider. The same order/amount/reason returns the same `refund_request_id` after
+a timeout or restart; changing the amount is rejected. State transitions are
+locked and idempotent for `pending -> refunded/failed`. The service layer exposes
+provider submission and reconciliation internally; no user-facing refund button
+or automatic wallet reversal is enabled yet, because reversing already-consumed
+quota requires a separate business policy and review.
+
 Routes:
 
 - `POST /api/user/alipay/pay`: authenticated wallet checkout.
@@ -87,6 +95,8 @@ callbacks, provider transaction uniqueness, rollback after native receipt failur
 final wallet ceiling enforcement, pending-plan purchase limits and immutable plan
 fulfillment. SQLite was also tested with a single connection; this exposed and
 fixed a pre-existing nested database-time query that could deadlock fulfillment.
+The matrix was rerun after adding `AlipayRefundRecord`; all six fresh/upgrade
+runs passed.
 
 A separate process test commits a wallet payment, exits before acknowledging the
 caller, then starts a second process against that database: the retry is idempotent
@@ -107,7 +117,8 @@ the signed SDK request/response envelope on a generated local CA and keeps order
 
 The Edge page rendered the Alipay method, recent-order card, and active local+subscription on the compiled candidate. The Playwright extension click action+timed out while waiting for the rendered payment button to become stable, despite+no application console error and a passing API flow. QR rendering and the actual+human click/scan therefore remain unverified in the browser; this is recorded as+an acceptance gap rather than inferred from the successful HTTP probe.
 
-Remaining acceptance gates: durable refund identities and refund/close accounting;
+Remaining acceptance gates: external refund/close accounting and wallet-reversal
+policy;
 late, reordered and refunded trade handling; SQL-to-Redis crash recovery; native
 configuration and checkout UI; an isolated running candidate and browser tests;
 then a separately reviewed human payment and refund. Existing protocol, billing,

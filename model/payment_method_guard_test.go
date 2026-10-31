@@ -43,7 +43,7 @@ func TestAlipayOrderDatabaseMatrix(t *testing.T) {
 				t.Run(startingState, func(t *testing.T) {
 					db := alipayAccountingTestDB(t, engine, startingState)
 					if startingState == "upgrade" {
-						require.NoError(t, db.AutoMigrate(&User{}, &TopUp{}, &SubscriptionPlan{}, &SubscriptionOrder{}, &UserSubscription{}, &Log{}))
+						require.NoError(t, db.AutoMigrate(&User{}, &TopUp{}, &AlipayOrder{}, &AlipayRefundRecord{}, &SubscriptionPlan{}, &SubscriptionOrder{}, &UserSubscription{}, &Log{}))
 						legacy := User{Username: "legacy-alipay", AffCode: "legacy-test", Quota: 91, Status: common.UserStatusEnabled}
 						require.NoError(t, db.Create(&legacy).Error)
 						require.NoError(t, db.Create(&TopUp{UserId: legacy.Id, TradeNo: "legacy-order", Amount: 1, Money: 1,
@@ -174,6 +174,19 @@ func alipayAccountingCases(t *testing.T, db *gorm.DB) {
 	require.True(t, already)
 	require.Equal(t, 123466, getUserQuotaForPaymentGuardTest(t, user.Id))
 	require.Equal(t, common.TopUpStatusSuccess, GetTopUpByTradeNo(order.OrderId).Status)
+	refundRecord, refundRequest, err := PrepareAlipayRefund(order.OrderId, 100, "local reconciliation")
+	require.NoError(t, err)
+	require.Equal(t, AlipayRefundPending, refundRecord.Status)
+	require.Equal(t, refundRecord.RefundRequestId, refundRequest.RefundRequestID)
+	retryRecord, retryRequest, err := PrepareAlipayRefund(order.OrderId, 100, "local reconciliation")
+	require.NoError(t, err)
+	require.Equal(t, refundRecord.RefundRequestId, retryRecord.RefundRequestId)
+	require.Equal(t, refundRequest.RefundRequestID, retryRequest.RefundRequestID)
+	_, _, err = PrepareAlipayRefund(order.OrderId, 101, "local reconciliation")
+	require.ErrorIs(t, err, ErrAlipayRefundMismatch)
+	require.NoError(t, SetAlipayRefundState(refundRecord.RefundRequestId, AlipayRefunded, `{"fixture":true}`))
+	require.NoError(t, SetAlipayRefundState(refundRecord.RefundRequestId, AlipayRefunded, ""))
+	require.ErrorIs(t, SetAlipayRefundState(refundRecord.RefundRequestId, AlipayRefundFailed, ""), ErrAlipayRefundState)
 	second := &AlipayOrder{UserId: user.Id, RequestId: "second-request", OrderId: "second-order", AppId: order.AppId, SellerId: order.SellerId,
 		AmountCents: 288, CreditedQuota: 1, RequestedAmount: 1}
 	require.NoError(t, CreateAlipayOrder(second, nil, 1))

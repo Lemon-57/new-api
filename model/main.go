@@ -355,6 +355,7 @@ func migrateDB() error {
 		&Midjourney{},
 		&TopUp{},
 		&AlipayOrder{},
+		&AlipayRefundRecord{},
 		&QuotaData{},
 		&Task{},
 		&TaskPlugin{},
