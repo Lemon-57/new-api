@@ -12,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -1133,4 +1134,98 @@ func mustAdvancedCustomRawMessage(t *testing.T, value any) []byte {
 	raw, err := common.Marshal(value)
 	require.NoError(t, err)
 	return raw
+}
+
+// This assessment deliberately records the current envelope incompatibility.
+// A successful handler return alone must not count as a compatible response.
+func TestGatewayAssessmentChatEnvelopeCompatibility(t *testing.T) {
+	oldMode, oldTimeout := gin.Mode(), constant.StreamingTimeout
+	gin.SetMode(gin.TestMode)
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() {
+		gin.SetMode(oldMode)
+		constant.StreamingTimeout = oldTimeout
+	})
+	chatJSON := `{"id":"chatcmpl-assessment","object":"chat.completion","created":1710000000,"model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"assessment-ok","tool_calls":[{"id":"call_assessment","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":103,"completion_tokens":17,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":41}}}`
+	chatSSE := strings.Join([]string{
+		`data: {"id":"chatcmpl-assessment","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","content":"assessment-ok"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-assessment","object":"chat.completion.chunk","model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_assessment","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: {"id":"chatcmpl-assessment","object":"chat.completion.chunk","model":"gpt-test","choices":[],"usage":{"prompt_tokens":103,"completion_tokens":17,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":41}}}`,
+		`data: [DONE]`, "",
+	}, "\n\n")
+	for _, responses := range []bool{false, true} {
+		for _, enterprise := range []bool{false, true} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("responses=%v/envelope=%v/stream=%v", responses, enterprise, stream), func(t *testing.T) {
+					path := "/v1/chat/completions"
+					if responses {
+						path = "/v1/responses"
+					}
+					info := advancedCustomRelayInfo(&dto.AdvancedCustomConfig{Routes: []dto.AdvancedCustomRoute{{
+						IncomingPath: path, UpstreamPath: "/v1/chat/completions",
+						Converter: relayconvert.ConverterOpenAIResponsesToOpenAIChat,
+					}}})
+					info.RequestURLPath = path
+					info.IsStream, info.DisablePing, info.ShouldIncludeUsage = stream, true, true
+					info.SetEstimatePromptTokens(11)
+					info.ChannelOtherSettings.OpenRouterEnterprise = &enterprise
+					if responses {
+						info.RelayMode = relayconstant.RelayModeResponses
+						info.RelayFormat = types.RelayFormatOpenAIResponses
+					} else {
+						info.ChannelType = constant.ChannelTypeOpenRouter
+					}
+					recorder := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(recorder)
+					c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+					body, contentType := chatJSON, "application/json"
+					if enterprise {
+						body = `{"success":true,"data":` + chatJSON + `}`
+					}
+					// The enterprise fixture wraps JSON, while its SSE is standard Chat SSE.
+					if stream {
+						body, contentType = chatSSE, "text/event-stream"
+					}
+					resp := &http.Response{StatusCode: http.StatusOK,
+						Header: http.Header{"Content-Type": []string{contentType}},
+						Body:   io.NopCloser(strings.NewReader(body))}
+					var usage any
+					var apiErr *types.NewAPIError
+					if responses {
+						usage, apiErr = (&Adaptor{}).DoResponse(c, resp, info)
+					} else {
+						usage, apiErr = (&openai.Adaptor{}).DoResponse(c, resp, info)
+					}
+					require.Nil(t, apiErr)
+					require.IsType(t, &dto.Usage{}, usage)
+					gotUsage := usage.(*dto.Usage)
+					assert.Equal(t, http.StatusOK, recorder.Code)
+					if responses && enterprise && !stream {
+						assert.NotContains(t, recorder.Body.String(), "assessment-ok")
+						assert.NotContains(t, recorder.Body.String(), "call_assessment")
+						assert.Empty(t, gjson.GetBytes(recorder.Body.Bytes(), "output").Array())
+						assert.Equal(t, 11, gotUsage.PromptTokens)
+						assert.Zero(t, gotUsage.CompletionTokens)
+						t.Log("incompatible: HTTP 200 without text/tool call; upstream usage replaced with estimate")
+						return
+					}
+					assert.Contains(t, recorder.Body.String(), "assessment-ok")
+					assert.Contains(t, recorder.Body.String(), "call_assessment")
+					assert.Contains(t, recorder.Body.String(), "lookup")
+					assert.Equal(t, 103, gotUsage.PromptTokens)
+					assert.Equal(t, 17, gotUsage.CompletionTokens)
+					assert.Equal(t, 120, gotUsage.TotalTokens)
+					if responses {
+						require.NotNil(t, gotUsage.InputTokensDetails)
+						assert.Equal(t, 41, gotUsage.InputTokensDetails.CachedTokens)
+					} else {
+						assert.Equal(t, 41, gotUsage.PromptTokensDetails.CachedTokens)
+					}
+					if responses && stream {
+						assert.Contains(t, recorder.Body.String(), "response.completed")
+					}
+				})
+			}
+		}
+	}
 }
