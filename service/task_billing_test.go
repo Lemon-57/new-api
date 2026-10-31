@@ -198,7 +198,9 @@ func TestBillingSessionSettlementUsesOneQuotaForFundingAndToken(t *testing.T) {
 // test exercises the factory with an expired, no-overflow subscription; it does
 // not claim a request can bypass the HTTP authentication/group middleware.
 func TestExpiredSubscriptionFundingPreferencesCompatibility(t *testing.T) {
+	originalMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(originalMode) })
 	require.NoError(t, model.DB.AutoMigrate(&model.SubscriptionPreConsumeRecord{}))
 	for _, tc := range []struct {
 		preference     string
