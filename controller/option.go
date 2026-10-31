@@ -109,6 +109,8 @@ func GetOptions(c *gin.Context) {
 		Key: "ResendKeyConfigured", Value: strconv.FormatBool(strings.TrimSpace(common.OptionMap["ResendApiKey"]) != ""),
 	})
 	common.OptionMapRWMutex.Unlock()
+	managedAlipay, _ := model.LoadManagedAlipaySettings()
+	options = append(options, publicAlipayOptions(managedAlipay)...)
 	// Display the same effective expressions used by pricing and settlement,
 	// including built-in defaults absent from persisted administrator options.
 	for key, values := range map[string]map[string]string{

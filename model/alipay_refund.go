@@ -48,6 +48,7 @@ func PrepareAlipayRefund(orderID string, amountCents int64, reason string) (*Ali
 		return nil, pay.Refund{}, ErrAlipayRefundNotAllowed
 	}
 	var record AlipayRefundRecord
+	var source AlipayOrder
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order AlipayOrder
 		if err := lockForUpdate(tx).Where("order_id = ?", orderID).First(&order).Error; err != nil {
@@ -56,6 +57,7 @@ func PrepareAlipayRefund(orderID string, amountCents int64, reason string) (*Ali
 		if order.Status != common.TopUpStatusSuccess || order.TradeNo == nil || amountCents > order.AmountCents {
 			return ErrAlipayRefundNotAllowed
 		}
+		source = order
 		var existing AlipayRefundRecord
 		findErr := lockForUpdate(tx).Where("order_id = ?", orderID).First(&existing).Error
 		if findErr == nil {
@@ -75,9 +77,7 @@ func PrepareAlipayRefund(orderID string, amountCents int64, reason string) (*Ali
 	if err != nil {
 		return nil, pay.Refund{}, err
 	}
-	return &record, pay.Refund{Order: pay.Order{OrderID: record.OrderId, TradeNo: record.TradeNo, AmountCents: record.AmountCents},
-		RefundRequestID: record.RefundRequestId, RefundCents: record.AmountCents, Reason: record.Reason,
-		RequestedAt: time.Unix(record.RequestedAt, 0)}, nil
+	return &record, record.ToProviderRefund(source), nil
 }
 
 func SetAlipayRefundState(requestID, state, providerPayload string) error {
@@ -113,8 +113,8 @@ func GetAlipayRefundByOrder(orderID string) (*AlipayRefundRecord, error) {
 	return &record, nil
 }
 
-func (r AlipayRefundRecord) ToProviderRefund() pay.Refund {
-	return pay.Refund{Order: pay.Order{OrderID: r.OrderId, TradeNo: r.TradeNo, AmountCents: r.AmountCents},
+func (r AlipayRefundRecord) ToProviderRefund(order AlipayOrder) pay.Refund {
+	return pay.Refund{Order: pay.Order{OrderID: r.OrderId, TradeNo: r.TradeNo, AmountCents: order.AmountCents},
 		RefundRequestID: r.RefundRequestId, RefundCents: r.AmountCents, Reason: r.Reason,
 		RequestedAt: time.Unix(r.RequestedAt, 0)}
 }

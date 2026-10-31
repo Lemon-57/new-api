@@ -1,8 +1,8 @@
 # Alipay face-to-face adaptation
 
 Status: provider, checkout HTTP handlers and durable wallet/subscription
-fulfillment verified locally. Administrative configuration, checkout UI and
-browser acceptance remain pending.
+fulfillment verified locally. Managed configuration and its form have automated
+coverage; browser payment acceptance and refund accounting remain pending.
 This branch is not ready to replace an existing payment service.
 
 Baseline: New API `v1.0.0-rc.47` (`e835b1bfc43b565d625537830dbfb19328925134`).
@@ -53,7 +53,9 @@ Refund preparation now persists an `AlipayRefundRecord` before calling the
 provider. The same order/amount/reason returns the same `refund_request_id` after
 a timeout or restart; changing the amount is rejected. State transitions are
 locked and idempotent for `pending -> refunded/failed`. The service layer exposes
-provider submission and reconciliation internally; no user-facing refund button
+provider submission and reconciliation internally; pending responses remain pending,
+queries use current time for the absence grace period, and partial refunds retain
+the original order total. Disabling new checkout does not disable reconciliation; no user-facing refund button
 or automatic wallet reversal is enabled yet, because reversing already-consumed
 quota requires a separate business policy and review.
 
@@ -77,8 +79,8 @@ JSON file outside the source checkout. It uses Sub2API credential names plus
 rate; CNY plans retain their stored price. Set `notifyUrl` to the candidate's
 `/api/user/alipay/notify` URL and use its own return URL. Never copy a production
 callback destination into a local candidate. No credential is returned by these
-APIs or added to configuration exports. A native administrative configuration UI
-is still required before operational parity can be claimed.
+APIs or added to configuration exports. The private-file override takes precedence
+over managed configuration and its presence rejects managed saves.
 
 Database/HTTP validation on Windows, Go 1.27.3:
 
@@ -113,14 +115,26 @@ and cross-user query rejection before any gateway call. Currency tests cover
 explicit USD conversion, unchanged CNY totals, cent rounding and invalid totals.
 
 The isolated fixture gateway (`tools/alipay-lab/fixture_gateway.py`) implements
-the signed SDK request/response envelope on a generated local CA and keeps orders+in a private runtime directory. A probe through the compiled candidate created a+CNY 7.20 QR checkout, marked it paid through the local fixture, delivered the+signed notification, and read back `success`; the first probe increased wallet+quota to 1,000,000 and repeated reconciliation stayed idempotent. A second probe+created a plan checkout, completed it through the fixture, and read back one active+subscription. These are synthetic local payments; no live Alipay endpoint or+production credential was used.
+the signed SDK request/response envelope on a generated local CA and keeps orders
+in a private runtime directory. A probe through the compiled candidate created a
+CNY 7.20 QR checkout, marked it paid through the local fixture, delivered the
+signed notification, and read back `success`; the first probe increased wallet
+quota to 1,000,000 and repeated reconciliation stayed idempotent. A second probe
+created a plan checkout, completed it through the fixture, and read back one active
+subscription. These are synthetic local payments; no live Alipay endpoint or
+production credential was used.
 
-The Edge page rendered the Alipay method, recent-order card, and active local+subscription on the compiled candidate. The Playwright extension click action+timed out while waiting for the rendered payment button to become stable, despite+no application console error and a passing API flow. QR rendering and the actual+human click/scan therefore remain unverified in the browser; this is recorded as+an acceptance gap rather than inferred from the successful HTTP probe.
+The Edge page rendered the Alipay method, recent-order card, and active local
+subscription on the compiled candidate. The Playwright extension click action
+timed out while waiting for the rendered payment button to become stable, despite
+no application console error and a passing API flow. QR rendering and the actual
+human click/scan therefore remain unverified in the browser; this is recorded as
+an acceptance gap rather than inferred from the successful HTTP probe.
 
 Remaining acceptance gates: external refund/close accounting and wallet-reversal
 policy;
 late, reordered and refunded trade handling; SQL-to-Redis crash recovery; native
-configuration and checkout UI; an isolated running candidate and browser tests;
+runtime acceptance of managed configuration; complete browser payment tests;
 then a separately reviewed human payment and refund. Existing protocol, billing,
 migration and observation gaps in the broader replacement assessment also remain.
 
@@ -129,3 +143,39 @@ Security references used during implementation: [OWASP payment gateway integrati
 and [session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
 Refund fulfillment, cache crash recovery and authenticated configuration are
 still integration gates; these tests do not establish ASVS compliance.
+
+## Managed configuration acceptance
+
+The existing payment settings page now includes an Alipay tab. Saving it sends
+one complete request to `PUT /api/option/alipay`, under the existing root-only
+router plus a dashboard-session check. Personal API tokens are rejected.
+Enabling requires the existing compliance gate, valid signing/verification keys,
+and a callback URL. HTTPS is required except for loopback HTTP in sandbox mode.
+USD-to-CNY conversion is explicit; there is no silently selected default rate.
+
+The complete configuration is committed as one `AlipayDirectConfigSecret` row in
+the existing options table, rather than independent per-field writes. Payment
+readers use that committed row. Blank key inputs preserve the stored keys, and
+ordinary option updates cannot bypass this endpoint. General settings reads expose
+only the non-secret fields. Save logging records the actor and mode flags, excludes
+keys, and suppresses ORM SQL diagnostics for secret-bearing reads/writes. The
+stored value uses the same database storage convention as existing payment
+secrets; this change does not add encryption at rest.
+
+Merchant/application, sandbox and verification-key changes are conservatively
+rejected once orders exist. Safe rotation across historical orders needs a
+versioned merchant/key strategy and remains a limitation. New order creation
+locks the managed configuration row before its merchant snapshot so it cannot
+race a merchant change.
+
+Automated settings checks cover API-token rejection, blank-key preservation,
+failed-save rollback, generic-setting bypass rejection, read redaction and form
+save success/failure. The form submits one complete save, masks key fields,
+preserves pasted PEM line breaks, clears entered keys only after success, and
+supports all seven locale files. The related frontend suites contain 25 passing
+tests. Refund-service regression checks exercise signed pending, absent and
+successful responses plus a terminal retry with no second provider submission.
+
+These settings and refund-service fixes have not been installed into the running
+v2 browser candidate. A successful test/build does not establish live Alipay
+merchant acceptance, complete refund accounting, or replacement readiness.

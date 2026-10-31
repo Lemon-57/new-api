@@ -7372,6 +7372,22 @@
     "Please sign in again.": "Veuillez vous reconnecter.",
     "Payment status could not be verified.": "Impossible de vérifier le paiement.",
     "Alipay payment QR code": "Code QR de paiement Alipay",
-    "Copy order number": "Copier le numéro de commande"
+    "Copy order number": "Copier le numéro de commande",
+    "Configure direct Alipay checkout. Secrets are write-only in this form.": "Configurez le paiement Alipay direct. Les secrets sont accessibles uniquement en écriture.",
+    "Enabling this exposes Alipay as a payment method after compliance confirmation.": "Après confirmation de conformité, cette option affiche Alipay comme moyen de paiement.",
+    "Use the Alipay sandbox gateway for local verification.": "Utilisez la passerelle sandbox Alipay pour la vérification locale.",
+    "Leave blank to keep the stored key.": "Laissez vide pour conserver la clé enregistrée.",
+    "Enable direct Alipay": "Activer Alipay",
+    "Alipay sandbox": "Sandbox Alipay",
+    "Alipay application ID": "ID d’application Alipay",
+    "Alipay application private key": "Clé privée de l’application Alipay",
+    "Alipay verification public key": "Clé publique Alipay",
+    "Alipay seller ID": "ID marchand Alipay",
+    "Alipay notification URL": "URL de notification Alipay",
+    "Alipay return URL": "URL de retour Alipay",
+    "Alipay CNY per USD": "CNY par USD",
+    "Alipay settings are managed by a private file": "Les paramètres Alipay sont gérés par un fichier privé",
+    "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "Impossible d’enregistrer Alipay. Vérifiez les clés, l’URL de notification et les commandes existantes.",
+    "Use the dedicated Alipay settings endpoint": "Utilisez le point de configuration dédié à Alipay"
   }
 }

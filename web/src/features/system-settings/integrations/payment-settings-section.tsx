@@ -47,7 +47,9 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { getPaymentErrorTranslation } from '@/features/wallet/lib/payment'
+import { api } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 import { confirmPaymentCompliance } from '../api'
@@ -121,6 +123,15 @@ const paymentSchema = z.object({
       })
     }
   }),
+  AlipayEnabled: z.boolean(),
+  AlipaySandbox: z.boolean(),
+  AlipayAppId: z.string(),
+  AlipayPrivateKey: z.string(),
+  AlipayPublicKey: z.string(),
+  AlipaySellerId: z.string(),
+  AlipayNotifyUrl: z.string(),
+  AlipayReturnUrl: z.string(),
+  AlipayCNYPerUSD: z.string(),
   AmountOptions: z.string().superRefine((value, ctx) => {
     const error = getJsonError(value, (parsed) => Array.isArray(parsed))
     if (error) {
@@ -224,6 +235,15 @@ export function PaymentSettingsSection({
   complianceDefaults,
 }: PaymentSettingsSectionProps) {
   const { t } = useTranslation()
+  const alipayLabels = {
+    AlipayAppId: t('Alipay application ID'),
+    AlipaySellerId: t('Alipay seller ID'),
+    AlipayNotifyUrl: t('Alipay notification URL'),
+    AlipayReturnUrl: t('Alipay return URL'),
+    AlipayCNYPerUSD: t('Alipay CNY per USD'),
+    AlipayPrivateKey: t('Alipay application private key'),
+    AlipayPublicKey: t('Alipay verification public key'),
+  }
   const queryClient = useQueryClient()
   const updateOption = useUpdateOption()
   const initialFormValues = React.useMemo<PaymentFormValues>(
@@ -427,6 +447,15 @@ export function PaymentSettingsSection({
       MinTopUp: values.MinTopUp,
       CustomCallbackAddress: removeTrailingSlash(values.CustomCallbackAddress),
       PayMethods: values.PayMethods.trim(),
+      AlipayEnabled: values.AlipayEnabled,
+      AlipaySandbox: values.AlipaySandbox,
+      AlipayAppId: values.AlipayAppId.trim(),
+      AlipayPrivateKey: values.AlipayPrivateKey.trim(),
+      AlipayPublicKey: values.AlipayPublicKey.trim(),
+      AlipaySellerId: values.AlipaySellerId.trim(),
+      AlipayNotifyUrl: values.AlipayNotifyUrl.trim(),
+      AlipayReturnUrl: values.AlipayReturnUrl.trim(),
+      AlipayCNYPerUSD: values.AlipayCNYPerUSD.trim(),
       AmountOptions: values.AmountOptions.trim(),
       AmountDiscount: values.AmountDiscount.trim(),
       StripeApiSecret: values.StripeApiSecret.trim(),
@@ -471,6 +500,15 @@ export function PaymentSettingsSection({
         initialRef.current.CustomCallbackAddress
       ),
       PayMethods: initialRef.current.PayMethods.trim(),
+      AlipayEnabled: initialRef.current.AlipayEnabled,
+      AlipaySandbox: initialRef.current.AlipaySandbox,
+      AlipayAppId: initialRef.current.AlipayAppId.trim(),
+      AlipayPrivateKey: initialRef.current.AlipayPrivateKey.trim(),
+      AlipayPublicKey: initialRef.current.AlipayPublicKey.trim(),
+      AlipaySellerId: initialRef.current.AlipaySellerId.trim(),
+      AlipayNotifyUrl: initialRef.current.AlipayNotifyUrl.trim(),
+      AlipayReturnUrl: initialRef.current.AlipayReturnUrl.trim(),
+      AlipayCNYPerUSD: initialRef.current.AlipayCNYPerUSD.trim(),
       AmountOptions: initialRef.current.AmountOptions.trim(),
       AmountDiscount: initialRef.current.AmountDiscount.trim(),
       StripeApiSecret: initialRef.current.StripeApiSecret.trim(),
@@ -543,6 +581,21 @@ export function PaymentSettingsSection({
     ) {
       updates.push({ key: 'PayMethods', value: sanitized.PayMethods })
     }
+
+    const hasAlipayChanges =
+      [
+        ['AlipayEnabled', sanitized.AlipayEnabled],
+        ['AlipaySandbox', sanitized.AlipaySandbox],
+        ['AlipayAppId', sanitized.AlipayAppId],
+        ['AlipaySellerId', sanitized.AlipaySellerId],
+        ['AlipayNotifyUrl', sanitized.AlipayNotifyUrl],
+        ['AlipayReturnUrl', sanitized.AlipayReturnUrl],
+        ['AlipayCNYPerUSD', sanitized.AlipayCNYPerUSD],
+      ].some(
+        ([key, value]) => value !== initial[key as keyof typeof initial]
+      ) ||
+      !!sanitized.AlipayPrivateKey ||
+      !!sanitized.AlipayPublicKey
 
     if (
       normalizeJsonForComparison(sanitized.AmountOptions) !==
@@ -710,9 +763,36 @@ export function PaymentSettingsSection({
       waffoPancakeSelection.storeID !== waffoPancakeSavedBinding.storeID ||
       waffoPancakeSelection.productID !== waffoPancakeSavedBinding.productID
 
-    if (updates.length === 0 && !hasWaffoPancakeChanges) {
+    if (updates.length === 0 && !hasWaffoPancakeChanges && !hasAlipayChanges) {
       toast.info(t('No changes to save'))
       return
+    }
+
+    if (hasAlipayChanges) {
+      try {
+        requireServerSuccess(
+          (
+            await api.put('/api/option/alipay', {
+              enabled: sanitized.AlipayEnabled,
+              sandbox: sanitized.AlipaySandbox,
+              appId: sanitized.AlipayAppId,
+              sellerId: sanitized.AlipaySellerId,
+              privateKey: sanitized.AlipayPrivateKey,
+              publicKey: sanitized.AlipayPublicKey,
+              notifyUrl: sanitized.AlipayNotifyUrl,
+              returnUrl: sanitized.AlipayReturnUrl,
+              cnyPerUsd: sanitized.AlipayCNYPerUSD,
+            })
+          ).data
+        )
+        form.setValue('AlipayPrivateKey', '')
+        form.setValue('AlipayPublicKey', '')
+        void queryClient.invalidateQueries({ queryKey: ['system-options'] })
+        toast.success(t('Setting updated successfully'))
+      } catch (error) {
+        handleServerError(error, t('Failed to update setting'))
+        return
+      }
     }
 
     for (const update of updates) {
@@ -882,9 +962,10 @@ export function PaymentSettingsSection({
           />
           <Tabs defaultValue='general' className='min-w-0'>
             <div className='overflow-x-auto pb-1'>
-              <TabsList className='grid min-w-[44rem] grid-cols-6'>
+              <TabsList className='grid min-w-[52rem] grid-cols-7'>
                 <TabsTrigger value='general'>{t('General')}</TabsTrigger>
                 <TabsTrigger value='epay'>Epay</TabsTrigger>
+                <TabsTrigger value='alipay'>Alipay</TabsTrigger>
                 <TabsTrigger value='stripe'>{t('Stripe')}</TabsTrigger>
                 <TabsTrigger value='creem'>Creem</TabsTrigger>
                 <TabsTrigger value='waffo-pancake'>Waffo Pancake</TabsTrigger>
@@ -1254,6 +1335,121 @@ export function PaymentSettingsSection({
                       </FormItem>
                     )}
                   />
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value='alipay' className={paymentTabContentClassName}>
+              <div className='space-y-4'>
+                <div>
+                  <h3 className='text-lg font-medium'>Alipay</h3>
+                  <p className='text-muted-foreground text-sm'>
+                    {t(
+                      'Configure direct Alipay checkout. Secrets are write-only in this form.'
+                    )}
+                  </p>
+                </div>
+                <FormField
+                  control={form.control}
+                  name='AlipayEnabled'
+                  render={({ field }) => (
+                    <SettingsSwitchItem>
+                      <SettingsSwitchContent>
+                        <FormLabel>{t('Enable direct Alipay')}</FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Enabling this exposes Alipay as a payment method after compliance confirmation.'
+                          )}
+                        </FormDescription>
+                      </SettingsSwitchContent>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </SettingsSwitchItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='AlipaySandbox'
+                  render={({ field }) => (
+                    <SettingsSwitchItem>
+                      <SettingsSwitchContent>
+                        <FormLabel>{t('Alipay sandbox')}</FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Use the Alipay sandbox gateway for local verification.'
+                          )}
+                        </FormDescription>
+                      </SettingsSwitchContent>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </SettingsSwitchItem>
+                  )}
+                />
+                <div className='grid gap-6 md:grid-cols-2'>
+                  {(
+                    [
+                      'AlipayAppId',
+                      'AlipaySellerId',
+                      'AlipayNotifyUrl',
+                      'AlipayReturnUrl',
+                      'AlipayCNYPerUSD',
+                    ] as const
+                  ).map((name) => (
+                    <FormField
+                      key={name}
+                      control={form.control}
+                      name={name}
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{alipayLabels[name]}</FormLabel>
+                          <FormControl>
+                            <Input {...field} autoComplete='off' />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  ))}
+                  {(['AlipayPrivateKey', 'AlipayPublicKey'] as const).map(
+                    (name) => (
+                      <FormField
+                        key={name}
+                        control={form.control}
+                        name={name}
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{alipayLabels[name]}</FormLabel>
+                            <FormControl>
+                              <Input
+                                type='password'
+                                placeholder={t('Enter new key to update')}
+                                autoComplete='new-password'
+                                {...field}
+                                onPaste={(event) => {
+                                  event.preventDefault()
+                                  field.onChange(
+                                    event.clipboardData.getData('text')
+                                  )
+                                }}
+                              />
+                            </FormControl>
+                            <FormDescription>
+                              {t('Leave blank to keep the stored key.')}
+                            </FormDescription>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    )
+                  )}
                 </div>
               </div>
             </TabsContent>

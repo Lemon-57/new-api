@@ -10,6 +10,7 @@ import (
 	pay "github.com/QuantumNous/new-api/pkg/payment/alipay"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	dblogger "gorm.io/gorm/logger"
 )
 
 const PaymentProviderAlipay = "alipay_direct"
@@ -73,6 +74,18 @@ func CreateAlipayOrder(order *AlipayOrder, plan *SubscriptionPlan, walletReceipt
 	order.CreatedAt = common.GetTimestamp()
 	order.Id, order.CompletedAt, order.SubscriptionId, order.TradeNo = 0, 0, 0, nil
 	return DB.Transaction(func(tx *gorm.DB) error {
+		// Serialize managed merchant changes with new order snapshots. The
+		// private-file evaluation path has no settings row and remains separate.
+		var configured Option
+		lookup := lockForUpdate(tx.Session(&gorm.Session{Logger: dblogger.Default.LogMode(dblogger.Silent)})).Where(map[string]any{"key": AlipaySettingsOption}).First(&configured).Error
+		if lookup == nil {
+			var merchant pay.Settings
+			if err := common.UnmarshalJsonStr(configured.Value, &merchant); err != nil || !merchant.Enabled || merchant.AppID != order.AppId || merchant.SellerID != order.SellerId {
+				return errors.New("alipay merchant configuration changed before order creation")
+			}
+		} else if !errors.Is(lookup, gorm.ErrRecordNotFound) {
+			return lookup
+		}
 		var user User
 		if err := lockForUpdate(tx).Select("id", "quota").First(&user, order.UserId).Error; err != nil {
 			return err

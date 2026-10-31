@@ -232,6 +232,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == AlipaySettingsOption || strings.HasPrefix(key, "payment_setting.Alipay") {
+		return common.NewMessage("Use the dedicated Alipay settings endpoint")
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}

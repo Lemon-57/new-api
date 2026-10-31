@@ -7372,6 +7372,22 @@
     "Please sign in again.": "Войдите снова.",
     "Payment status could not be verified.": "Не удалось проверить статус оплаты.",
     "Alipay payment QR code": "QR-код оплаты Alipay",
-    "Copy order number": "Скопировать номер заказа"
+    "Copy order number": "Скопировать номер заказа",
+    "Configure direct Alipay checkout. Secrets are write-only in this form.": "Настройте прямую оплату Alipay. Секреты доступны только для записи.",
+    "Enabling this exposes Alipay as a payment method after compliance confirmation.": "После подтверждения соответствия эта опция покажет Alipay как способ оплаты.",
+    "Use the Alipay sandbox gateway for local verification.": "Используйте песочницу Alipay для локальной проверки.",
+    "Leave blank to keep the stored key.": "Оставьте пустым, чтобы сохранить текущий ключ.",
+    "Enable direct Alipay": "Включить Alipay",
+    "Alipay sandbox": "Песочница Alipay",
+    "Alipay application ID": "ID приложения Alipay",
+    "Alipay application private key": "Приватный ключ приложения Alipay",
+    "Alipay verification public key": "Открытый ключ Alipay",
+    "Alipay seller ID": "ID продавца Alipay",
+    "Alipay notification URL": "URL уведомлений Alipay",
+    "Alipay return URL": "URL возврата Alipay",
+    "Alipay CNY per USD": "CNY за USD",
+    "Alipay settings are managed by a private file": "Настройки Alipay управляются закрытым файлом",
+    "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "Не удалось сохранить Alipay. Проверьте ключи, URL уведомлений и существующие заказы.",
+    "Use the dedicated Alipay settings endpoint": "Используйте отдельный интерфейс настроек Alipay"
   }
 }

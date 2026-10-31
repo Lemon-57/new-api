@@ -320,6 +320,15 @@ export type BillingSettings = {
   'payment_setting.compliance_confirmed_at': number
   'payment_setting.compliance_confirmed_by': number
   'payment_setting.compliance_confirmed_ip': string
+  'payment_setting.AlipayEnabled': boolean
+  'payment_setting.AlipaySandbox': boolean
+  'payment_setting.AlipayAppId': string
+  'payment_setting.AlipayPrivateKey': string
+  'payment_setting.AlipayPublicKey': string
+  'payment_setting.AlipaySellerId': string
+  'payment_setting.AlipayNotifyUrl': string
+  'payment_setting.AlipayReturnUrl': string
+  'payment_setting.AlipayCNYPerUSD': string
   StripeApiSecret: string
   StripeWebhookSecret: string
   StripePriceId: string

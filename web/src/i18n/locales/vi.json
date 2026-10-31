@@ -7372,6 +7372,22 @@
     "Please sign in again.": "Vui lòng đăng nhập lại.",
     "Payment status could not be verified.": "Không thể xác minh trạng thái thanh toán.",
     "Alipay payment QR code": "Mã QR thanh toán Alipay",
-    "Copy order number": "Sao chép mã đơn"
+    "Copy order number": "Sao chép mã đơn",
+    "Configure direct Alipay checkout. Secrets are write-only in this form.": "Cấu hình thanh toán trực tiếp Alipay. Khóa bí mật chỉ được ghi.",
+    "Enabling this exposes Alipay as a payment method after compliance confirmation.": "Sau khi xác nhận tuân thủ, tùy chọn này hiển thị Alipay làm phương thức thanh toán.",
+    "Use the Alipay sandbox gateway for local verification.": "Dùng cổng sandbox Alipay để kiểm tra cục bộ.",
+    "Leave blank to keep the stored key.": "Để trống để giữ khóa đã lưu.",
+    "Enable direct Alipay": "Bật Alipay",
+    "Alipay sandbox": "Sandbox Alipay",
+    "Alipay application ID": "ID ứng dụng Alipay",
+    "Alipay application private key": "Khóa riêng ứng dụng Alipay",
+    "Alipay verification public key": "Khóa công khai Alipay",
+    "Alipay seller ID": "ID người bán Alipay",
+    "Alipay notification URL": "URL thông báo Alipay",
+    "Alipay return URL": "URL quay lại Alipay",
+    "Alipay CNY per USD": "CNY mỗi USD",
+    "Alipay settings are managed by a private file": "Cấu hình Alipay được quản lý bằng tệp riêng",
+    "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "Không thể lưu Alipay. Kiểm tra khóa, URL thông báo và đơn hiện có.",
+    "Use the dedicated Alipay settings endpoint": "Dùng giao diện cấu hình riêng của Alipay"
   }
 }

@@ -7372,6 +7372,22 @@
     "Please sign in again.": "请重新登录。",
     "Payment status could not be verified.": "暂时无法确认付款状态。",
     "Alipay payment QR code": "支付宝付款二维码",
-    "Copy order number": "复制订单号"
+    "Copy order number": "复制订单号",
+    "Configure direct Alipay checkout. Secrets are write-only in this form.": "配置支付宝当面付。密钥在此表单中仅可写入。",
+    "Enabling this exposes Alipay as a payment method after compliance confirmation.": "确认合规后，启用此项会向用户展示支付宝。",
+    "Use the Alipay sandbox gateway for local verification.": "本机验证使用支付宝沙箱网关。",
+    "Leave blank to keep the stored key.": "留空则保留已保存的密钥。",
+    "Enable direct Alipay": "启用支付宝",
+    "Alipay sandbox": "支付宝沙箱",
+    "Alipay application ID": "支付宝应用 ID",
+    "Alipay application private key": "支付宝应用私钥",
+    "Alipay verification public key": "支付宝公钥",
+    "Alipay seller ID": "支付宝商户 ID",
+    "Alipay notification URL": "支付宝通知地址",
+    "Alipay return URL": "支付宝返回地址",
+    "Alipay CNY per USD": "每美元人民币汇率",
+    "Alipay settings are managed by a private file": "支付宝配置由私有文件管理",
+    "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "支付宝配置保存失败，请检查密钥、回调地址和已有订单。",
+    "Use the dedicated Alipay settings endpoint": "请使用支付宝专用配置接口"
   }
 }

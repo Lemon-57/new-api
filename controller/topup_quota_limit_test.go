@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -10,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -79,6 +81,8 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	require.NoError(t, os.WriteFile(configFile, config, 0600))
 	t.Setenv("ALIPAY_DIRECT_CONFIG_FILE", configFile)
 	var gatewayRequests int
+	var refundRequests []string
+	refundQuerySuccess := false
 	gatewayState := "WAIT_BUYER_PAY"
 	oldTransport := http.DefaultTransport
 	http.DefaultTransport = alipayHTTPTestTransport(func(req *http.Request) (*http.Response, error) {
@@ -90,6 +94,15 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 		body := fmt.Sprintf(`{"code":"10000","out_trade_no":%q,"qr_code":"https://qr.alipay.com/test"}`, biz["out_trade_no"])
 		if method == "alipay.trade.query" {
 			body = fmt.Sprintf(`{"code":"10000","out_trade_no":%q,"trade_no":%q,"total_amount":"2.88","trade_status":%q}`, biz["out_trade_no"], "ali-"+biz["out_trade_no"].(string), gatewayState)
+		} else if method == "alipay.trade.refund" {
+			refundRequests = append(refundRequests, biz["out_request_no"].(string))
+			require.Equal(t, "0.88", biz["refund_amount"])
+			body = fmt.Sprintf(`{"code":"10000","out_trade_no":%q,"trade_no":%q,"fund_change":"N"}`, biz["out_trade_no"], "ali-"+biz["out_trade_no"].(string))
+		} else if method == "alipay.trade.fastpay.refund.query" {
+			body = `{"code":"10000"}`
+			if refundQuerySuccess {
+				body = fmt.Sprintf(`{"code":"10000","out_trade_no":%q,"trade_no":%q,"out_request_no":%q,"refund_status":"REFUND_SUCCESS","refund_amount":"0.88"}`, biz["out_trade_no"], "ali-"+biz["out_trade_no"].(string), biz["out_request_no"])
+			}
 		} else {
 			require.Equal(t, "alipay.trade.precreate", method)
 		}
@@ -223,6 +236,49 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	require.NoError(t, model.DB.First(&unchanged, user.Id).Error)
 	require.Equal(t, "http-pro", unchanged.Group)
 	require.Equal(t, 1000009, unchanged.Quota, "subscription purchase must not also top up the wallet")
+	// The service must leave an uncertain fund_change=N result pending and
+	// reuse the same durable refund identity, including while new checkout is off.
+	settings.Enabled = false
+	disabledRefundConfig, err := common.Marshal(settings)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configFile, disabledRefundConfig, 0600))
+	for range 2 {
+		record, state, err := service.RequestAlipayRefund(context.Background(), order.OrderId, 88, "test reconciliation", "127.0.0.1")
+		require.NoError(t, err)
+		require.Equal(t, model.AlipayRefundPending, state)
+		require.Equal(t, model.AlipayRefundPending, record.Status)
+	}
+	require.Len(t, refundRequests, 2)
+	require.Equal(t, refundRequests[0], refundRequests[1])
+	record, state, err := service.ReconcileAlipayRefund(context.Background(), order.OrderId, "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, model.AlipayRefundPending, state)
+	// Explicitly move the persisted request time past the documented grace
+	// boundary; no sleep or timestamp dependency is needed.
+	require.NoError(t, model.DB.Model(&model.AlipayRefundRecord{}).Where("id = ?", record.Id).Update("requested_at", common.GetTimestamp()-601).Error)
+	_, state, err = service.ReconcileAlipayRefund(context.Background(), order.OrderId, "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, model.AlipayRefundFailed, state)
+	// The provider-request structure retains the original order total for a
+	// partial refund rather than treating the refund amount as the order total.
+	stored, err := model.GetAlipayRefundByOrder(order.OrderId)
+	require.NoError(t, err)
+	providerRequest := stored.ToProviderRefund(*order)
+	require.EqualValues(t, 288, providerRequest.AmountCents)
+	require.EqualValues(t, 88, providerRequest.RefundCents)
+	refundQuerySuccess = true
+	// A second paid order exercises positive reconciliation, then terminal retry.
+	_, state, err = service.RequestAlipayRefund(context.Background(), tokenOrder.OrderId, 88, "positive reconciliation", "127.0.0.1")
+	require.NoError(t, err)
+	_, state, err = service.ReconcileAlipayRefund(context.Background(), tokenOrder.OrderId, "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, model.AlipayRefunded, state)
+	beforeTerminalRetry := gatewayRequests
+	_, state, err = service.RequestAlipayRefund(context.Background(), tokenOrder.OrderId, 88, "positive reconciliation", "127.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, model.AlipayRefunded, state)
+	require.Equal(t, beforeTerminalRetry, gatewayRequests)
+	require.NoError(t, os.WriteFile(configFile, config, 0600))
 	recorderList := httptest.NewRecorder()
 	router.ServeHTTP(recorderList, httptest.NewRequest(http.MethodGet, "/orders", nil))
 	require.Contains(t, recorderList.Body.String(), tokenOrder.OrderId)
@@ -244,6 +300,103 @@ type alipayHTTPTestTransport func(*http.Request) (*http.Response, error)
 
 func (f alipayHTTPTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func TestAlipayManagedSettingsWriteOnlyAndAtomic(t *testing.T) {
+	t.Setenv("ALIPAY_DIRECT_CONFIG_FILE", "")
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "alipay-settings.db")), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.Option{}, &model.AlipayOrder{}))
+	model.DB = db
+	common.OptionMapRWMutex.Lock()
+	oldOptions := maps.Clone(common.OptionMap)
+	common.OptionMap = map[string]string{}
+	common.OptionMapRWMutex.Unlock()
+	compliance := operation_setting.GetPaymentSetting()
+	oldCompliance := *compliance
+	compliance.ComplianceConfirmed, compliance.ComplianceTermsVersion = true, operation_setting.CurrentComplianceTermsVersion
+	t.Cleanup(func() {
+		model.DB = oldDB
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = oldOptions
+		common.OptionMapRWMutex.Unlock()
+		*compliance = oldCompliance
+		sqlDB, _ := db.DB()
+		_ = sqlDB.Close()
+	})
+	merchant, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	ali, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	public, err := x509.MarshalPKIXPublicKey(&ali.PublicKey)
+	require.NoError(t, err)
+	settings := pay.Settings{Enabled: true, CNYPerUSD: "7.2", Config: pay.Config{AppID: "test-settings-app", SellerID: "test-settings-seller", Sandbox: true,
+		PrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(merchant)})),
+		PublicKey:  string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: public})), NotifyURL: "http://127.0.0.1:47850/api/user/alipay/notify"}}
+	useAccessToken := false
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("use_access_token", useAccessToken); c.Next() })
+	router.PUT("/alipay", SaveAlipaySettings)
+	router.GET("/options", GetOptions)
+	put := func(value pay.Settings) *httptest.ResponseRecorder {
+		payload, err := common.Marshal(value)
+		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPut, "/alipay", strings.NewReader(string(payload)))
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, request)
+		return recorder
+	}
+	useAccessToken = true
+	require.Equal(t, http.StatusForbidden, put(settings).Code)
+	_, err = model.LoadManagedAlipaySettings()
+	require.Error(t, err)
+	useAccessToken = false
+	response := put(settings)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	require.NotContains(t, response.Body.String(), "PRIVATE KEY")
+	require.NotContains(t, response.Body.String(), "PUBLIC KEY")
+	stored, err := service.LoadAlipayDirectSettings()
+	require.NoError(t, err)
+	require.True(t, stored.PrivateKey == strings.TrimSpace(settings.PrivateKey) && stored.PublicKey == strings.TrimSpace(settings.PublicKey))
+	require.Equal(t, settings.AppID, stored.AppID)
+	// Blank inputs must retain both keys while other settings change atomically.
+	blank := settings
+	blank.PrivateKey, blank.PublicKey, blank.CNYPerUSD = "", "", "7.3"
+	response = put(blank)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	stored, err = service.LoadAlipayDirectSettings()
+	require.NoError(t, err)
+	require.True(t, stored.PrivateKey == strings.TrimSpace(settings.PrivateKey) && stored.PublicKey == strings.TrimSpace(settings.PublicKey))
+	require.Equal(t, "7.3", stored.CNYPerUSD)
+	for _, invalid := range []pay.Settings{
+		{Enabled: true, Config: pay.Config{AppID: settings.AppID, NotifyURL: "javascript:invalid"}},
+		{Enabled: true, Config: pay.Config{AppID: settings.AppID, PrivateKey: "do-not-echo-this-key", NotifyURL: "https://example.test/notify"}},
+	} {
+		response = put(invalid)
+		require.Contains(t, response.Body.String(), `"success":false`)
+		require.NotContains(t, response.Body.String(), "do-not-echo-this-key")
+		still, err := model.LoadManagedAlipaySettings()
+		require.NoError(t, err)
+		require.Equal(t, "7.3", still.CNYPerUSD)
+		require.True(t, still.PrivateKey == strings.TrimSpace(settings.PrivateKey))
+	}
+	// Ordinary settings writes cannot bypass complete-configuration validation.
+	require.Error(t, model.UpdateOption(model.AlipaySettingsOption, `{"enabled":true}`))
+	require.Error(t, model.UpdateOption("payment_setting.AlipayPrivateKey", "overwrite"))
+	// Refreshing the option map must not reveal the single protected JSON row.
+	var option model.Option
+	require.NoError(t, db.Where(map[string]any{"key": model.AlipaySettingsOption}).First(&option).Error)
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap[model.AlipaySettingsOption] = option.Value
+	common.OptionMapRWMutex.Unlock()
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/options", nil))
+	require.Contains(t, recorder.Body.String(), "test-settings-app")
+	require.NotContains(t, recorder.Body.String(), model.AlipaySettingsOption)
+	require.NotContains(t, recorder.Body.String(), "PRIVATE KEY")
+	require.NotContains(t, recorder.Body.String(), "PUBLIC KEY")
 }
 
 func TestAlipayPlanCurrencyAmount(t *testing.T) {

@@ -262,6 +262,32 @@ func alipayAccountingCases(t *testing.T, db *gorm.DB) {
 	for _, item := range recent {
 		require.Equal(t, user.Id, item.UserId)
 	}
+	// Managed configuration is a single committed option on every dialect.
+	// Disabled drafts may omit real credentials; enabling cannot bypass validation.
+	draft := pay.Settings{Enabled: false, CNYPerUSD: "7.2", Config: pay.Config{AppID: "fixture-settings", Sandbox: true,
+		PrivateKey: "synthetic-private", PublicKey: "synthetic-public", NotifyURL: "http://127.0.0.1:47850/api/user/alipay/notify"}}
+	_, err = SaveManagedAlipaySettings(draft)
+	require.NoError(t, err)
+	require.NoError(t, migrateDB())
+	loaded, err := LoadManagedAlipaySettings()
+	require.NoError(t, err)
+	require.Equal(t, draft.AppID, loaded.AppID)
+	draft.PrivateKey, draft.PublicKey, draft.CNYPerUSD = "", "", "7.3"
+	_, err = SaveManagedAlipaySettings(draft)
+	require.NoError(t, err)
+	loaded, err = LoadManagedAlipaySettings()
+	require.NoError(t, err)
+	require.True(t, loaded.PrivateKey == "synthetic-private" && loaded.PublicKey == "synthetic-public")
+	require.Equal(t, "7.3", loaded.CNYPerUSD)
+	draft.Enabled = true
+	_, err = SaveManagedAlipaySettings(draft)
+	require.Error(t, err)
+	loaded, err = LoadManagedAlipaySettings()
+	require.NoError(t, err)
+	require.False(t, loaded.Enabled)
+	draft.Enabled, draft.AppID = false, "changed-merchant"
+	_, err = SaveManagedAlipaySettings(draft)
+	require.Error(t, err, "merchant changes must be rejected while existing orders require reconciliation")
 }
 
 func TestAlipayWalletCreditKeepsCacheInSync(t *testing.T) {
@@ -315,7 +341,7 @@ func TestAlipayOrderProcessRecovery(t *testing.T) {
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
 	defer sqlDB.Close()
-	require.NoError(t, db.AutoMigrate(&User{}, &TopUp{}, &AlipayOrder{}, &Log{}))
+	require.NoError(t, db.AutoMigrate(&User{}, &TopUp{}, &AlipayOrder{}, &Option{}, &Log{}))
 	payment := pay.Payment{OrderID: "recover-order", TradeNo: "recover-transaction", AmountCents: 1, State: pay.Paid}
 	if phase == "commit-before-reply" {
 		user := User{Username: "alipay-recovery", AffCode: "alipay-recovery", Status: common.UserStatusEnabled}

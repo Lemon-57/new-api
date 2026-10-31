@@ -6,23 +6,19 @@ import (
 	"os"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	pay "github.com/QuantumNous/new-api/pkg/payment/alipay"
 	"github.com/shopspring/decimal"
 )
 
-// AlipayDirectSettings reads Sub2API-compatible credential names from a private
-// local file. No credential configuration is exposed through the management API.
-// This also keeps local evaluation credentials out of source and option exports.
-type AlipayDirectSettings struct {
-	pay.Config
-	Enabled   bool   `json:"enabled"`
-	CNYPerUSD string `json:"cnyPerUsd"`
-}
+// AlipayDirectSettings preserves Sub2API-compatible credential names. An explicit
+// private file overrides the managed option; management reads never return keys.
+type AlipayDirectSettings = pay.Settings
 
 func LoadAlipayDirectSettings() (*AlipayDirectSettings, error) {
 	path := os.Getenv("ALIPAY_DIRECT_CONFIG_FILE")
 	if path == "" {
-		return nil, errors.New("direct Alipay is not configured")
+		return model.LoadManagedAlipaySettings()
 	}
 	file, err := os.Open(path)
 	if err != nil {

@@ -7372,6 +7372,22 @@
     "Please sign in again.": "Please sign in again.",
     "Payment status could not be verified.": "Payment status could not be verified.",
     "Alipay payment QR code": "Alipay payment QR code",
-    "Copy order number": "Copy order number"
+    "Copy order number": "Copy order number",
+    "Configure direct Alipay checkout. Secrets are write-only in this form.": "Configure direct Alipay checkout. Secrets are write-only in this form.",
+    "Enabling this exposes Alipay as a payment method after compliance confirmation.": "Enabling this exposes Alipay as a payment method after compliance confirmation.",
+    "Use the Alipay sandbox gateway for local verification.": "Use the Alipay sandbox gateway for local verification.",
+    "Leave blank to keep the stored key.": "Leave blank to keep the stored key.",
+    "Enable direct Alipay": "Enable direct Alipay",
+    "Alipay sandbox": "Alipay sandbox",
+    "Alipay application ID": "Alipay application ID",
+    "Alipay application private key": "Alipay application private key",
+    "Alipay verification public key": "Alipay verification public key",
+    "Alipay seller ID": "Alipay seller ID",
+    "Alipay notification URL": "Alipay notification URL",
+    "Alipay return URL": "Alipay return URL",
+    "Alipay CNY per USD": "Alipay CNY per USD",
+    "Alipay settings are managed by a private file": "Alipay settings are managed by a private file",
+    "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "Alipay settings could not be saved. Check the keys, callback URL and existing orders.",
+    "Use the dedicated Alipay settings endpoint": "Use the dedicated Alipay settings endpoint"
   }
 }

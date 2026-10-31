@@ -51,6 +51,14 @@ type Client struct {
 	sdk    *sdk.Client
 }
 
+// Settings preserves Sub2API's credential names for both the private-file and
+// managed configuration paths. Callers must never return this type to clients.
+type Settings struct {
+	Config
+	Enabled   bool   `json:"enabled"`
+	CNYPerUSD string `json:"cnyPerUsd"`
+}
+
 func New(config Config) (*Client, error) {
 	if strings.TrimSpace(config.AppID) == "" || config.PrivateKey == "" {
 		return nil, errors.New("alipay appId and privateKey are required")
