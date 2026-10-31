@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -162,7 +162,7 @@ func TestAlipayCheckoutRoutes(t *testing.T) {
 	require.Len(t, f.requests, 1)
 	require.Equal(t, "alipay.trade.precreate", f.requests[0].Get("method"))
 	var biz map[string]string
-	require.NoError(t, json.Unmarshal([]byte(f.requests[0].Get("biz_content")), &biz))
+	require.NoError(t, common.UnmarshalJsonStr(f.requests[0].Get("biz_content"), &biz))
 	require.Equal(t, "FACE_TO_FACE_PAYMENT", biz["product_code"])
 	require.Equal(t, "2.88", biz["total_amount"])
 	require.Equal(t, f.config.NotifyURL, f.requests[0].Get("notify_url"))
@@ -271,7 +271,7 @@ func TestAlipayRefundRetryAndReconciliation(t *testing.T) {
 	}
 	for _, request := range f.requests {
 		var biz map[string]string
-		require.NoError(t, json.Unmarshal([]byte(request.Get("biz_content")), &biz))
+		require.NoError(t, common.UnmarshalJsonStr(request.Get("biz_content"), &biz))
 		require.Equal(t, "refund-1", biz["out_request_no"])
 		require.Equal(t, "0.88", biz["refund_amount"])
 	}

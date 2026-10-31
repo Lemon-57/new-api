@@ -98,6 +98,7 @@ func GetTopUpInfo(c *gin.Context) {
 	}
 
 	data := gin.H{
+		"enable_alipay_topup":              isAlipayTopUpEnabled(),
 		"enable_online_topup":              isEpayTopUpEnabled(),
 		"enable_stripe_topup":              isStripeTopUpEnabled(),
 		"enable_creem_topup":               isCreemTopUpEnabled(),
