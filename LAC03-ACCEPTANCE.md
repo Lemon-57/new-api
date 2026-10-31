@@ -164,3 +164,27 @@ LAC-02 可用物理内存约 3.04 GiB，未配置 Swap。
 [reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy) 文档；
 记录操作参照 [Cloudflare DNS API](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/)。
 完整网关配置、DNS 凭据、证书私钥、会话 Cookie 和登录记录不随源码上传。
+
+
+## 双入口倍率计费（2026-11-01）
+
+现网对照关系已按实际配置核实：
+
+| 入口 | 入口角色 | 普通文本倍率 | 图片倍率 |
+|---|---|---:|---:|
+| `api.killai.cc` | optimized | 0.22 | 1 |
+| `apilax.killai.cc` | ordinary | 0.20 | 1 |
+| `newapi.killai.cc` | optimized | 0.22 | 1 |
+| `newapilax.killai.cc` | ordinary | 0.20 | 1 |
+
+`newapi.killai.cc` 和 `newapilax.killai.cc` 共用现有验收实例的 Key、余额和账本。NewAPI 通过受信边缘写入一次性入口证明；后端只接受来自 loopback 边缘的固定随机令牌，并删除客户端同名请求头。客户端自带 Host、X-Forwarded 头、错误令牌、重复头或未知角色都会在访问上游前返回 403。入口倍率进入现有计费快照，沿用原表达式和实际 usage，结算不重复扣费。
+
+真实验证结果：
+
+- 候选进程在 LAC-03 以独立端口 `18761` 启动，共享原验收 SQLite 账本；原旧实例和客户端路由未停止。新请求已切到候选，旧实例保留自然排空。
+- loopback 候选的 ordinary 计费为 540 单位，optimized 为 594 单位；同一 usage、`0.2 / 0.22` 倍率和流水读回一致。图片别名走独立 1 倍。
+- 公网域名 JSON/SSE 均 HTTP 200 并返回完整答案；账本逐笔读回：`newapi.killai.cc` 记录 `billing_ingress=optimized`、`group_ratio=0.22`，`newapilax.killai.cc` 记录 `billing_ingress=ordinary`、`group_ratio=0.20`。
+- WebSocket 每轮都从初始认证上下文复制入口证明，不依赖伪造的后续请求头；回环测试覆盖两轮新上下文、重复结算和拒绝伪造入口。
+- 优化入口所在 SJC 的 Nginx 只追加 HTTP ACME 站点和 HTTPS 站点证书自动化所需的候选配置；加载前检查无活动 Upgrade 栈，Nginx master PID、容器 ID、重启次数不变。LAC-03 Caddy 同样保持原进程，通过已有自动 HTTPS 机制取得 `newapilax.killai.cc` 证书。没有远程编译。
+
+倍率字段只改变入口对应的 group multiplier；NewAPI 当前模型基础表达式、图片独立价格、用户余额、Key 额度和账本单位均保持不变。订阅额度兑换倍率不在这次入口计费范围内。现有账本已含此前验收和本次公网调用；新增入口证据保留于本机私有目录，凭据、入口令牌、证书私钥和原始配置未进入 Git。

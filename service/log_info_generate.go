@@ -70,6 +70,11 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	if ctx == nil || other == nil {
 		return
 	}
+	if ctx.Request != nil {
+		if ingress, ok := common.BillingIngressFromContext(ctx.Request.Context()); ok {
+			other.SetPublic("billing_ingress", ingress.Name)
+		}
+	}
 	other.SetAdmin("use_channel", ctx.GetStringSlice("use_channel"))
 	if relayInfo != nil {
 		if billingModel := relayInfo.GetBillingModelName(); billingModel != "" && billingModel != relayInfo.OriginModelName {

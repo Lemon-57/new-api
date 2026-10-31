@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -59,6 +60,27 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	}
 
+	if ctx != nil && ctx.Request != nil {
+		if ingress, ok := common.BillingIngressFromContext(ctx.Request.Context()); ok {
+			groupRatioInfo.GroupRatio = ingress.GroupMultiplier
+			image := relayInfo.RelayFormat == types.RelayFormatOpenAIImage ||
+				relayInfo.RelayMode == relayconstant.RelayModeImagesGenerations ||
+				relayInfo.RelayMode == relayconstant.RelayModeImagesEdits
+			for _, model := range ingress.ImageModels {
+				if strings.EqualFold(model, relayInfo.OriginModelName) ||
+					strings.EqualFold(model, relayInfo.GetBillingModelName()) ||
+					strings.EqualFold(model, relayInfo.GetUpstreamModelName()) {
+					image = true
+					break
+				}
+			}
+			if image {
+				groupRatioInfo.GroupRatio = ingress.ImageMultiplier
+			}
+			groupRatioInfo.GroupSpecialRatio = -1
+			groupRatioInfo.HasSpecialRatio = false
+		}
+	}
 	return groupRatioInfo
 }
 

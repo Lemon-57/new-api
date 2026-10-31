@@ -6,6 +6,7 @@ package i18n
 
 // Errors returned to AI clients
 const (
+	MsgBillingIngressRequired = "relay.billing_ingress_required"
 	MsgDatabaseError          = "common.database_error"
 	MsgAuthUserBanned         = "auth.user_banned"
 	MsgTokenGetInfoFailed     = "token.get_info_failed"

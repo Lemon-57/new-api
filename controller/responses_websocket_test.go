@@ -22,11 +22,15 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
@@ -38,8 +42,189 @@ import (
 
 var responsesWSTestUserSequence atomic.Int64
 
+func TestTrustedBillingIngressSettlementAndWSTurns(t *testing.T) {
+	user, token := setupResponsesWSRequestTest(t)
+	oldMode, oldScale := gin.Mode(), common.QuotaPerUnit
+	gin.SetMode(gin.TestMode)
+	common.QuotaPerUnit = 100_000_000
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(k, v string) error { saved[k] = v; return nil }))
+	oldPrices := ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		gin.SetMode(oldMode)
+		common.QuotaPerUnit = oldScale
+		require.NoError(t, config.GlobalConfig.LoadFromDB(saved))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(oldPrices))
+	})
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":          `{"ingress-contract":"tiered_expr"}`,
+		"billing_setting.billing_expr":          `{"ingress-contract":"tier(\"base\", p * 0.4 + c * 1.6 + cr * 0.1)"}`,
+		"group_ratio_setting.group_ratio":       `{"default":0.7}`,
+		"group_ratio_setting.group_group_ratio": `{"default":{"default":0.3}}`,
+	}))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"ingress-image":0.01,"image-through-chat":0.01}`))
+	const initial = 100_000_000
+	require.NoError(t, model.DB.Model(user).Update("quota", initial).Error)
+	require.NoError(t, model.DB.Model(token).Updates(map[string]any{"remain_quota": initial, "used_quota": 0}).Error)
+	secret := strings.Repeat("fixture-ingress-", 4)
+	edge, err := middleware.NewBillingIngress(
+		`{"ordinary":{"group_multiplier":0.2,"image_multiplier":1,"image_models":["image-through-chat"]},"optimized":{"group_multiplier":0.22,"image_multiplier":1,"image_models":["image-through-chat"]}}`,
+		secret, "")
+	require.NoError(t, err)
+	total := 0
+	for _, tc := range []struct {
+		name, route                   string
+		image, ws, stream, imageAlias bool
+		want                          int
+	}{
+		{name: "ordinary JSON", route: "ordinary", want: 1122},
+		{name: "optimized SSE", route: "optimized", stream: true, want: 1234},
+		{name: "ordinary image", route: "ordinary", image: true, want: 1_000_000},
+		{name: "optimized image", route: "optimized", image: true, want: 1_000_000},
+		{name: "image model through text protocol", route: "ordinary", imageAlias: true, image: true, want: 1_000_000},
+		{name: "optimized two WS turns", route: "optimized", ws: true, want: 1234},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settle := func(c *gin.Context) *types.NewAPIError {
+				assert.Empty(t, c.GetHeader(middleware.BillingIngressTokenHeader))
+				assert.Empty(t, c.GetHeader(middleware.BillingIngressHeader))
+				info := &relaycommon.RelayInfo{UserId: user.Id, TokenId: token.Id, TokenKey: token.Key,
+					OriginModelName: "ingress-contract", UserGroup: "default", UsingGroup: "default",
+					UserSetting: dto.UserSetting{BillingPreference: "wallet_only"},
+					RelayFormat: types.RelayFormatOpenAIResponses, IsStream: tc.stream, RequestId: c.GetString(common.RequestIdKey)}
+				if tc.image {
+					info.OriginModelName = "ingress-image"
+					info.RelayFormat = types.RelayFormatOpenAIImage
+					info.RelayMode = relayconstant.RelayModeImagesGenerations
+				}
+				if tc.imageAlias {
+					info.OriginModelName = "image-through-chat"
+					info.RelayFormat = types.RelayFormatOpenAI
+					info.RelayMode = relayconstant.RelayModeChatCompletions
+				}
+				price, priceErr := helper.ModelPriceHelper(c, info, 103, &types.TokenCountMeta{})
+				require.NoError(t, priceErr)
+				info.PriceData = price
+				session, apiErr := service.NewBillingSession(c, info, price.QuotaToPreConsume)
+				require.Nil(t, apiErr)
+				quota := price.QuotaToPreConsume
+				if !tc.image {
+					assert.Equal(t, price.GroupRatioInfo.GroupRatio, info.TieredBillingSnapshot.GroupRatio)
+					// Neither headers nor native group changes can change the frozen quote.
+					c.Request.Header.Set(middleware.BillingIngressHeader, "forged")
+					ok, actual, _ := service.TryTieredSettle(info, service.BuildTieredTokenParams(&dto.Usage{
+						PromptTokens: 103, CompletionTokens: 17, TotalTokens: 120,
+						PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 41},
+					}, false, map[string]bool{"p": true, "c": true, "cr": true}))
+					require.True(t, ok)
+					quota = actual
+				}
+				assert.Equal(t, tc.want, quota)
+				assert.False(t, price.GroupRatioInfo.HasSpecialRatio)
+				require.NoError(t, session.Settle(quota))
+				require.NoError(t, session.Settle(quota))
+				total += quota
+				wallet, readErr := model.GetUserQuota(user.Id, true)
+				require.NoError(t, readErr)
+				var current model.Token
+				require.NoError(t, model.DB.First(&current, token.Id).Error)
+				assert.Equal(t, initial-total, wallet)
+				assert.Equal(t, initial-total, current.RemainQuota)
+				assert.Equal(t, total, current.UsedQuota)
+				return nil
+			}
+			engine := gin.New()
+			require.NoError(t, engine.SetTrustedProxies(nil))
+			engine.Use(edge)
+			method := http.MethodPost
+			if tc.ws {
+				method = http.MethodGet
+			}
+			engine.Handle(method, "/v1/responses", middleware.TokenAuth(), func(c *gin.Context) {
+				if !tc.ws {
+					require.Nil(t, settle(c))
+					return
+				}
+				runner := newResponsesWSRequestRunner(c)
+				// The per-turn router receives a fresh context, with no attestation headers.
+				for turn := range 2 {
+					request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("{}"))
+					require.Nil(t, runner(request, fmt.Sprintf("ingress-turn-%d", turn), settle))
+				}
+			})
+			request := httptest.NewRequest(method, "/v1/responses", strings.NewReader("{}"))
+			request.RemoteAddr = "127.0.0.1:12345"
+			request.Header.Set("Authorization", "Bearer sk-"+token.Key)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(middleware.BillingIngressHeader, tc.route)
+			request.Header.Set(middleware.BillingIngressTokenHeader, secret)
+			response := httptest.NewRecorder()
+			engine.ServeHTTP(response, request)
+			require.Equal(t, http.StatusOK, response.Code)
+		})
+	}
+	for _, tc := range []struct {
+		name, peer, route, key string
+		duplicate              bool
+	}{
+		{name: "missing", peer: "127.0.0.1:1"},
+		{name: "forged peer", peer: "198.51.100.5:1", route: "ordinary", key: secret},
+		{name: "wrong key", peer: "127.0.0.1:1", route: "ordinary", key: "wrong"},
+		{name: "unknown route", peer: "127.0.0.1:1", route: "discount", key: secret},
+		{name: "duplicate header", peer: "127.0.0.1:1", route: "ordinary", key: secret, duplicate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := gin.New()
+			engine.Use(edge)
+			engine.POST("/v1/responses", func(c *gin.Context) { t.Fatal("untrusted request reached billing") })
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			req.RemoteAddr = tc.peer
+			req.Host = "newapilax.example"
+			req.Header.Set("X-Forwarded-For", "127.0.0.1")
+			if tc.route != "" {
+				req.Header.Add(middleware.BillingIngressHeader, tc.route)
+			}
+			if tc.key != "" {
+				req.Header.Add(middleware.BillingIngressTokenHeader, tc.key)
+			}
+			if tc.duplicate {
+				req.Header.Add(middleware.BillingIngressHeader, "optimized")
+			}
+			rec := httptest.NewRecorder()
+			engine.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusForbidden, rec.Code)
+			wallet, err := model.GetUserQuota(user.Id, true)
+			require.NoError(t, err)
+			assert.Equal(t, initial-total, wallet)
+		})
+	}
+}
+
+func TestBillingIngressConfigurationAndOptIn(t *testing.T) {
+	secret := strings.Repeat("fixture-ingress-", 4)
+	for _, tc := range []struct{ routes, token, peers string }{
+		{routes: `{}`, token: secret},
+		{routes: `{"ordinary":{"group_multiplier":0,"image_multiplier":1}}`, token: secret},
+		{routes: `{"ordinary":{"group_multiplier":-1,"image_multiplier":1}}`, token: secret},
+		{routes: `{"ordinary":{"group_multiplier":0.2,"image_multiplier":1}}`, token: "short"},
+		{routes: `{"ordinary":{"group_multiplier":0.2,"image_multiplier":1}}`, token: secret, peers: "not-a-cidr"},
+	} {
+		_, err := middleware.NewBillingIngress(tc.routes, tc.token, tc.peers)
+		require.Error(t, err)
+	}
+	disabled, err := middleware.NewBillingIngress("", "", "")
+	require.NoError(t, err)
+	engine := gin.New()
+	engine.Use(disabled)
+	engine.POST("/v1/responses", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	result := httptest.NewRecorder()
+	engine.ServeHTTP(result, httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	assert.Equal(t, http.StatusNoContent, result.Code)
+}
+
 func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 	t.Helper()
+	require.NoError(t, i18n.Init())
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB
 	previousType := common.MainDatabaseType()

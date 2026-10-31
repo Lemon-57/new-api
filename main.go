@@ -180,6 +180,16 @@ func main() {
 
 	// Initialize HTTP server
 	server := gin.New()
+	billingIngress, err := middleware.NewBillingIngress(
+		os.Getenv("NEWAPI_BILLING_INGRESS_ROUTES"),
+		os.Getenv("NEWAPI_BILLING_INGRESS_TOKEN"),
+		os.Getenv("NEWAPI_BILLING_INGRESS_TRUSTED_CIDRS"),
+	)
+	if err != nil {
+		common.FatalLog(common.LogText("invalid billing ingress configuration"))
+		return
+	}
+	server.Use(billingIngress)
 	if err := middleware.ConfigureTrustedProxies(server); err != nil {
 		common.FatalLog(common.LogText("failed to configure trusted proxies: %s", err.Error()))
 		return

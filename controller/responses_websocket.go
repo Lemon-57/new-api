@@ -74,6 +74,7 @@ func (w *responsesWSResponseWriter) Write(data []byte) (int, error) {
 }
 
 func newResponsesWSRequestRunner(c *gin.Context) relay.ResponsesWSRequestRunner {
+	ingress, hasIngress := common.BillingIngressFromContext(c.Request.Context())
 	// Capture credentials before channel selection or header overrides. Resolve
 	// the peer once with the public router's trusted-proxy configuration.
 	headers := c.Request.Header.Clone()
@@ -84,6 +85,9 @@ func newResponsesWSRequestRunner(c *gin.Context) relay.ResponsesWSRequestRunner 
 	return func(request *http.Request, requestID string, handle func(*gin.Context) *types.NewAPIError) *types.NewAPIError {
 		state := &responsesWSRequestState{requestID: requestID, handle: handle}
 		ctx := context.WithValue(request.Context(), responsesWSRequestContextKey{}, state)
+		if hasIngress {
+			ctx = common.WithBillingIngress(ctx, ingress)
+		}
 		ctx = context.WithValue(ctx, common.RequestIdKey, requestID)
 		request = request.Clone(ctx)
 		request.Method = http.MethodPost
