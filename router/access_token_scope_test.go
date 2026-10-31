@@ -56,6 +56,7 @@ var accessTokenExemptRoutes = []string{
 	"POST /api/user/auth/logout",
 
 	// Payment callbacks.
+	"POST /api/user/alipay/notify",
 	"POST /api/stripe/webhook",
 	"POST /api/creem/webhook",
 	"POST /api/waffo/webhook",
@@ -160,6 +161,21 @@ func TestAccessTokenCatalogCoversEveryPermission(t *testing.T) {
 	}
 	for resource, count := range resources {
 		assert.Equal(t, 1, count, "resource %s appears in more than one catalog entry", resource)
+	}
+}
+
+func TestAlipayDashboardRoutesRequireSession(t *testing.T) {
+	for _, route := range []string{
+		"POST /api/user/alipay/pay",
+		"GET /api/user/alipay/orders",
+		"GET /api/user/alipay/orders/:order_id",
+		"POST /api/user/alipay/orders/:order_id/close",
+		"POST /api/subscription/alipay/pay",
+		"PUT /api/option/alipay",
+	} {
+		rule, ok := middleware.AccessTokenRouteRule(route)
+		require.True(t, ok, route)
+		assert.Equal(t, "session", rule.Kind(), route)
 	}
 }
 
