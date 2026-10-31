@@ -17,6 +17,8 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	kittypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -125,6 +127,122 @@ func seedChannel(t *testing.T, id int) {
 	t.Helper()
 	ch := &model.Channel{Id: id, Name: "test_channel", Key: "sk-test", Status: common.ChannelStatusEnabled}
 	require.NoError(t, model.DB.Create(ch).Error)
+}
+
+// This is a compatibility observation, not a pricing-policy change. The source
+// contract supports a subscription-unit debit independent of the monetary key
+// debit; the native BillingSession currently settles both with actualQuota.
+// Amounts are explicit synthetic fixtures at 100,000,000 units per USD.
+func TestBillingSessionSettlementUsesOneQuotaForFundingAndToken(t *testing.T) {
+	oldScale := common.QuotaPerUnit
+	common.QuotaPerUnit = 100_000_000
+	t.Cleanup(func() { common.QuotaPerUnit = oldScale })
+	for _, tc := range []struct {
+		name          string
+		subscription  bool
+		settle        int
+		targetFunding int
+		targetToken   int
+		matches       bool
+	}{
+		{name: "ordinary subscription equal units", subscription: true, settle: 5610, targetFunding: 5610, targetToken: 5610, matches: true},
+		{name: "optimized preserve key debit", subscription: true, settle: 5610, targetFunding: 6233, targetToken: 5610, matches: false},
+		{name: "optimized preserve subscription debit", subscription: true, settle: 6233, targetFunding: 6233, targetToken: 5610, matches: false},
+		{name: "ordinary wallet monetary debit", settle: 1122, targetFunding: 1122, targetToken: 1122, matches: true},
+		{name: "optimized wallet monetary debit", settle: 1234, targetFunding: 1234, targetToken: 1234, matches: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			const userID, tokenID, subID, initial, reserved = 903, 904, 905, 1_000_000, 17
+			walletStart := initial
+			if !tc.subscription {
+				walletStart -= reserved
+			}
+			seedUser(t, userID, walletStart)
+			seedToken(t, tokenID, userID, "synthetic-ledger-comparison", initial-reserved)
+			require.NoError(t, model.DB.Model(&model.Token{}).Where("id = ?", tokenID).Update("used_quota", reserved).Error)
+			var funding FundingSource
+			if tc.subscription {
+				seedSubscription(t, subID, userID, initial, reserved)
+				funding = &SubscriptionFunding{userId: userID, subscriptionId: subID, preConsumed: reserved}
+			} else {
+				funding = &WalletFunding{userId: userID, consumed: reserved}
+			}
+			info := &relaycommon.RelayInfo{UserId: userID, TokenId: tokenID, TokenKey: "synthetic-ledger-comparison", IsPlayground: false}
+			session := &BillingSession{relayInfo: info, funding: funding, preConsumedQuota: reserved, tokenConsumed: reserved}
+			for range 2 {
+				require.NoError(t, session.Settle(tc.settle))
+			}
+			var token model.Token
+			require.NoError(t, model.DB.First(&token, tokenID).Error)
+			require.Equal(t, tc.settle, token.UsedQuota)
+			require.Equal(t, initial-tc.settle, token.RemainQuota)
+			wallet, err := model.GetUserQuota(userID, false)
+			require.NoError(t, err)
+			fundingDebit := int64(initial - wallet)
+			if tc.subscription {
+				var subscription model.UserSubscription
+				require.NoError(t, model.DB.First(&subscription, subID).Error)
+				require.Equal(t, initial, wallet)
+				fundingDebit = subscription.AmountUsed
+			}
+			require.EqualValues(t, tc.settle, fundingDebit)
+			matched := fundingDebit == int64(tc.targetFunding) && token.UsedQuota == tc.targetToken
+			require.Equal(t, tc.matches, matched)
+			t.Logf("funding_units=%d key_units=%d target_funding_units=%d target_key_units=%d exact_contract_match=%t", fundingDebit, token.UsedQuota, tc.targetFunding, tc.targetToken, matched)
+		})
+	}
+}
+
+// Funding preference is a separate contract from group authorization. This
+// test exercises the factory with an expired, no-overflow subscription; it does
+// not claim a request can bypass the HTTP authentication/group middleware.
+func TestExpiredSubscriptionFundingPreferencesCompatibility(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	require.NoError(t, model.DB.AutoMigrate(&model.SubscriptionPreConsumeRecord{}))
+	for _, tc := range []struct {
+		preference     string
+		walletFallback bool
+	}{
+		{preference: "subscription_first", walletFallback: true},
+		{preference: "wallet_only", walletFallback: true},
+		{preference: "subscription_only", walletFallback: false},
+	} {
+		t.Run(tc.preference, func(t *testing.T) {
+			truncate(t)
+			const userID, subID = 911, 912
+			seedUser(t, userID, 1000)
+			seedSubscription(t, subID, userID, 1000, 0)
+			require.NoError(t, model.DB.Model(&model.UserSubscription{}).Where("id = ?", subID).Updates(map[string]any{"end_time": common.GetTimestamp() - 1, "allow_wallet_overflow": false}).Error)
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/synthetic-funding-probe", nil)
+			info := &relaycommon.RelayInfo{UserId: userID, IsPlayground: true, ForcePreConsume: true,
+				RequestId: "synthetic-expired-" + tc.preference, UserSetting: dto.UserSetting{BillingPreference: tc.preference}}
+			session, apiErr := NewBillingSession(ctx, info, 50)
+			if tc.walletFallback {
+				require.Nil(t, apiErr)
+				require.NotNil(t, session)
+				require.Equal(t, BillingSourceWallet, info.BillingSource)
+				require.NoError(t, session.Settle(100))
+			} else {
+				require.NotNil(t, apiErr)
+				require.Equal(t, kittypes.ErrorCodeInsufficientUserQuota, apiErr.GetErrorCode(), "rejection must be a funding-policy result rather than a fixture/database failure")
+				require.Nil(t, session)
+			}
+			wallet, err := model.GetUserQuota(userID, false)
+			require.NoError(t, err)
+			wantWallet := 1000
+			if tc.walletFallback {
+				wantWallet = 900
+			}
+			require.Equal(t, wantWallet, wallet)
+			var expired model.UserSubscription
+			require.NoError(t, model.DB.First(&expired, subID).Error)
+			require.False(t, expired.AllowWalletOverflow)
+			require.Zero(t, expired.AmountUsed)
+			t.Logf("preference=%s expired_no_overflow=true wallet_debit=%d subscription_used=%d", tc.preference, 1000-wallet, expired.AmountUsed)
+		})
+	}
 }
 
 func seedChargedAccounting(t *testing.T, userID, channelID, tokenID, quota, requestCount int) {

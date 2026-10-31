@@ -1,0 +1,46 @@
+//go:build unit
+
+package service
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+// This overlay is compiled with the pinned Sub2API source rather than copying
+// its billing implementation. It records the source-side contract only; it
+// neither contacts a deployment nor proves the current production binary hash.
+func TestSubscriptionAndKeyIndependentAmountsCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                  string
+		subscription                                          bool
+		factor, actual, wantSubscription, wantWallet, wantKey float64
+	}{
+		{name: "ordinary subscription", subscription: true, factor: 1, actual: .00005610, wantSubscription: .00005610, wantKey: .00005610},
+		{name: "optimized subscription exchange", subscription: true, factor: 10.0 / 9.0, actual: .00005610, wantSubscription: .00006233, wantKey: .00005610},
+		{name: "ordinary wallet", factor: 1, actual: .00001122, wantWallet: .00001122, wantKey: .00001122},
+		{name: "optimized wallet", factor: 10.0 / 9.0, actual: .00001234, wantWallet: .00001234, wantKey: .00001234},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			groupID, subID := int64(7), int64(42)
+			group := &Group{ID: groupID, SubscriptionType: SubscriptionTypeStandard, RateMultiplier: 1}
+			if tc.subscription {
+				group.SubscriptionType = SubscriptionTypeSubscription
+			}
+			_, key := WithIngressBilling(context.Background(), &APIKey{ID: 2, GroupID: &groupID, Group: group, Quota: 100}, "fixture", 1, tc.factor)
+			params := &postUsageBillingParams{
+				Cost: &CostBreakdown{TotalCost: .00005610, ActualCost: tc.actual}, User: &User{ID: 1}, APIKey: key,
+				Account: &Account{ID: 3}, Subscription: &UserSubscription{ID: subID}, IsSubscriptionBill: tc.subscription,
+				APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{},
+			}
+			command := buildUsageBillingCommand("synthetic-contract-"+tc.name, nil, params)
+			require.NotNil(t, command)
+			require.Equal(t, tc.wantSubscription, command.SubscriptionCost)
+			require.Equal(t, tc.wantWallet, command.BalanceCost)
+			require.Equal(t, tc.wantKey, command.APIKeyQuotaCost)
+			t.Logf("subscription_usd=%.8f wallet_usd=%.8f key_usd=%.8f", command.SubscriptionCost, command.BalanceCost, command.APIKeyQuotaCost)
+		})
+	}
+}
