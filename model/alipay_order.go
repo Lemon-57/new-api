@@ -124,6 +124,15 @@ func GetAlipayOrderByRequest(userID int, requestID string) (*AlipayOrder, error)
 	return &order, nil
 }
 
+func ListRecentAlipayOrders(userID int) ([]AlipayOrder, error) {
+	orders := make([]AlipayOrder, 0)
+	if userID <= 0 {
+		return nil, errors.New("invalid user id")
+	}
+	err := DB.Where("user_id = ?", userID).Order("id DESC").Limit(20).Find(&orders).Error
+	return orders, err
+}
+
 // CompleteAlipayOrder is called only with a verified paid gateway result. All
 // fulfillment and receipt updates share the snapshot's row lock and transaction.
 // A lost HTTP reply can therefore be retried without crediting or granting twice.

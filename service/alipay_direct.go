@@ -30,8 +30,8 @@ func LoadAlipayDirectSettings() (*AlipayDirectSettings, error) {
 	}
 	defer file.Close()
 	var settings AlipayDirectSettings
-	if err := common.DecodeJson(io.LimitReader(file, 1024*1024), &settings); err != nil || !settings.Enabled {
-		return nil, errors.New("direct Alipay configuration is invalid or disabled")
+	if err := common.DecodeJson(io.LimitReader(file, 1024*1024), &settings); err != nil {
+		return nil, errors.New("direct Alipay configuration is invalid")
 	}
 	return &settings, nil
 }

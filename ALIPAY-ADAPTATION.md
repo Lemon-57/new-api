@@ -54,6 +54,7 @@ Routes:
 - `POST /api/user/alipay/pay`: authenticated wallet checkout.
 - `POST /api/subscription/alipay/pay`: authenticated plan checkout.
 - `GET /api/user/alipay/orders/:order_id`: owner-only payment reconciliation.
+- `GET /api/user/alipay/orders`: owner-scoped recent-order recovery list.
 - `POST /api/user/alipay/notify`: bounded RSA2-verified notification followed by
   an independent signed gateway query. Browser returns never fulfill orders.
 
@@ -101,8 +102,10 @@ plan purchase, native receipt units when the request uses token display units,
 and cross-user query rejection before any gateway call. Currency tests cover
 explicit USD conversion, unchanged CNY totals, cent rounding and invalid totals.
 
-The unchanged frontend and the full Linux candidate were built locally. Browser
-checkout acceptance remains pending; a successful build is not a payment test.
+The isolated fixture gateway (`tools/alipay-lab/fixture_gateway.py`) implements
+the signed SDK request/response envelope on a generated local CA and keeps orders+in a private runtime directory. A probe through the compiled candidate created a+CNY 7.20 QR checkout, marked it paid through the local fixture, delivered the+signed notification, and read back `success`; the first probe increased wallet+quota to 1,000,000 and repeated reconciliation stayed idempotent. A second probe+created a plan checkout, completed it through the fixture, and read back one active+subscription. These are synthetic local payments; no live Alipay endpoint or+production credential was used.
+
+The Edge page rendered the Alipay method, recent-order card, and active local+subscription on the compiled candidate. The Playwright extension click action+timed out while waiting for the rendered payment button to become stable, despite+no application console error and a passing API flow. QR rendering and the actual+human click/scan therefore remain unverified in the browser; this is recorded as+an acceptance gap rather than inferred from the successful HTTP probe.
 
 Remaining acceptance gates: durable refund identities and refund/close accounting;
 late, reordered and refunded trade handling; SQL-to-Redis crash recovery; native

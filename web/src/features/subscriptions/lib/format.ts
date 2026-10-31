@@ -18,9 +18,24 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
 
+import { toIntlLocale } from '@/i18n/languages'
 import dayjs from '@/lib/dayjs'
 
 import type { SubscriptionPlan } from '../types'
+
+// Plan prices carry their own denomination. The site currency helper converts
+// USD balances, so it cannot format a stored CNY plan without changing its value.
+export function formatPlanPrice(
+  plan: Partial<SubscriptionPlan>,
+  language: string
+): string {
+  return new Intl.NumberFormat(toIntlLocale(language), {
+    style: 'currency',
+    currency: plan.currency || 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(plan.price_amount || 0))
+}
 
 export function formatDuration(
   plan: Partial<SubscriptionPlan>,

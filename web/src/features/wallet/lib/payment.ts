@@ -112,6 +112,7 @@ export function isWaffoPancakePayment(paymentType: string): boolean {
 }
 
 export interface PaymentProcessors {
+  alipay?: (topupAmount: number) => Promise<boolean>
   regular: (topupAmount: number, paymentType: string) => Promise<boolean>
   waffo: (topupAmount: number, payMethodIndex: number) => Promise<boolean>
   waffoPancake: (topupAmount: number) => Promise<boolean>
@@ -123,6 +124,9 @@ export async function dispatchSelectedPayment(
   waffoMethodIndex: number | null,
   processors: PaymentProcessors
 ): Promise<boolean> {
+  if (paymentMethod.type === 'alipay_direct') {
+    return processors.alipay ? processors.alipay(topupAmount) : false
+  }
   if (isWaffoPayment(paymentMethod.type)) {
     if (waffoMethodIndex === null) {
       return false
@@ -173,7 +177,7 @@ export function getMinTopupAmount(topupInfo: TopupInfo | null): number {
     return DEFAULT_MIN_TOPUP
   }
 
-  if (topupInfo.enable_online_topup) {
+  if (topupInfo.enable_online_topup || topupInfo.enable_alipay_topup) {
     return topupInfo.min_topup
   }
 

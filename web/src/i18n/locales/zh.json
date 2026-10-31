@@ -2846,7 +2846,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相关项目",
     "footer.defaultCopyright": "版权所有。",
-    "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
+    "footer.newapi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "高级自定义渠道仅对 /v1/responses 且不做协议转换的路由生效。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
@@ -7358,6 +7358,20 @@
     "Zhipu": "智谱",
     "Zhipu GLM": "智谱GLM",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Alipay face-to-face": "支付宝当面付",
+    "Scan with Alipay to pay. Then check the payment status.": "使用支付宝扫码付款，然后查询付款状态。",
+    "Payment pending": "等待付款",
+    "Payment received": "付款已确认",
+    "Check payment": "查询付款状态",
+    "Open Alipay checkout": "打开支付宝付款",
+    "Recent Alipay orders": "近期支付宝订单",
+    "Resume payment": "恢复付款",
+    "Closing this window keeps the order available for recovery.": "关闭此窗口后，仍可从近期订单恢复付款。",
+    "Payment was not started because browser storage is unavailable.": "浏览器存储不可用，本次未发起付款。",
+    "Please sign in again.": "请重新登录。",
+    "Payment status could not be verified.": "暂时无法确认付款状态。",
+    "Alipay payment QR code": "支付宝付款二维码",
+    "Copy order number": "复制订单号"
   }
 }

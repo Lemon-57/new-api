@@ -25,6 +25,8 @@ import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
+import { AlipayOrdersCard } from './components/alipay-orders-card'
+import { AlipayCheckoutDialog } from './components/dialogs/alipay-checkout-dialog'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
@@ -42,6 +44,7 @@ import {
   useWaffoPayment,
   useWaffoPancakePayment,
 } from './hooks'
+import { useAlipayPayment } from './hooks/use-alipay-payment'
 import {
   getDefaultPaymentType,
   getMinTopupAmount,
@@ -124,6 +127,7 @@ export function Wallet(props: WalletProps) {
       setUserLoading(false)
     }
   }, [])
+  const alipay = useAlipayPayment(fetchUser)
 
   useEffect(() => {
     fetchUser()
@@ -182,8 +186,12 @@ export function Wallet(props: WalletProps) {
         return
       }
 
-      // Calculate payment amount and show confirmation dialog
-      await calculatePaymentAmount(topupAmount, method.type)
+      // Direct Alipay snapshots its CNY amount server-side. It must not call
+      // the legacy Epay amount calculator, which has a different provider and
+      // discount contract.
+      if (method.type !== 'alipay_direct') {
+        await calculatePaymentAmount(topupAmount, method.type)
+      }
       setConfirmDialogOpen(true)
     } finally {
       setPaymentLoading(null)
@@ -193,13 +201,13 @@ export function Wallet(props: WalletProps) {
   // Handle payment confirmation
   const handlePaymentConfirm = async () => {
     if (!selectedPaymentMethod) return
-
     const success = await dispatchSelectedPayment(
       selectedPaymentMethod,
       topupAmount,
       selectedWaffoMethodIndex,
       {
         regular: processPayment,
+        alipay: (amount) => alipay.start({ amount: Math.floor(amount) }),
         waffo: processWaffoPayment,
         waffoPancake: processWaffoPancakePayment,
       }
@@ -348,6 +356,12 @@ export function Wallet(props: WalletProps) {
               }
               loading={affiliateLoading}
             />
+            {topupInfo?.enable_alipay_topup && (
+              <AlipayOrdersCard
+                onResume={alipay.start}
+                processing={alipay.processing}
+              />
+            )}
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>
@@ -360,9 +374,20 @@ export function Wallet(props: WalletProps) {
         paymentAmount={paymentAmount}
         paymentMethod={selectedPaymentMethod}
         calculating={calculating}
-        processing={processing || waffoProcessing || pancakeProcessing}
+        processing={
+          processing ||
+          waffoProcessing ||
+          pancakeProcessing ||
+          alipay.processing
+        }
         discountRate={getDiscountRate()}
         usdExchangeRate={effectiveUsdExchangeRate}
+      />
+      <AlipayCheckoutDialog
+        checkout={alipay.checkout}
+        checking={alipay.checking}
+        onCheck={alipay.check}
+        onClose={alipay.close}
       />
 
       <TransferDialog

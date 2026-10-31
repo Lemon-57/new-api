@@ -2846,7 +2846,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相關項目",
     "footer.defaultCopyright": "版權所有。",
-    "footer.new\u0061pi.projectAttributionSuffix": "版權所有，由項目貢獻者設計與開發。",
+    "footer.newapi.projectAttributionSuffix": "版權所有，由項目貢獻者設計與開發。",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "進階自訂渠道僅對 /v1/responses 且不做協定轉換的路由生效。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "對於 2025 年 5 月 10 日之後新增的渠道，在部署時無需從模型名稱中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "對於私有部署，格式為：https://fastgpt.run/api/openapi",
@@ -7358,6 +7358,20 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Alipay face-to-face": "支付寶當面付",
+    "Scan with Alipay to pay. Then check the payment status.": "使用支付寶掃碼付款，然後查詢付款狀態。",
+    "Payment pending": "等待付款",
+    "Payment received": "付款已確認",
+    "Check payment": "查詢付款狀態",
+    "Open Alipay checkout": "開啟支付寶付款",
+    "Recent Alipay orders": "近期支付寶訂單",
+    "Resume payment": "恢復付款",
+    "Closing this window keeps the order available for recovery.": "關閉此視窗後，仍可從近期訂單恢復付款。",
+    "Payment was not started because browser storage is unavailable.": "瀏覽器儲存空間無法使用，本次未發起付款。",
+    "Please sign in again.": "請重新登入。",
+    "Payment status could not be verified.": "暫時無法確認付款狀態。",
+    "Alipay payment QR code": "支付寶付款 QR 碼",
+    "Copy order number": "複製訂單編號"
   }
 }

@@ -106,6 +106,8 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	router.POST("/subscription", SubscriptionRequestAlipayPay)
 	router.POST("/notify", AlipayNotify)
 	router.GET("/orders/:order_id", QueryAlipayOrder)
+	router.GET("/orders", ListAlipayOrders)
+	router.GET("/info", GetTopUpInfo)
 	post := func(path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -119,6 +121,18 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	require.Zero(t, gatewayRequests)
 	// Synthetic test state only; no real instance's declaration is changed.
 	compliance.ComplianceConfirmed, compliance.ComplianceTermsVersion = true, operation_setting.CurrentComplianceTermsVersion
+	info := httptest.NewRecorder()
+	router.ServeHTTP(info, httptest.NewRequest(http.MethodGet, "/info", nil))
+	var topupInfo struct {
+		Data struct {
+			EnableAlipay bool                `json:"enable_alipay_topup"`
+			Methods      []map[string]string `json:"pay_methods"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(info.Body.Bytes(), &topupInfo))
+	require.True(t, topupInfo.Data.EnableAlipay)
+	require.Len(t, topupInfo.Data.Methods, 1, "disabled Epay methods must not be exposed alongside direct Alipay")
+	require.Equal(t, model.PaymentProviderAlipay, topupInfo.Data.Methods[0]["type"])
 	response = post("/pay", `{"request_id":"http-request","amount":1}`)
 	require.Contains(t, response.Body.String(), "https://qr.alipay.com/test")
 	order, err := model.GetAlipayOrderByRequest(user.Id, "http-request")
@@ -154,6 +168,15 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	require.NoError(t, model.DB.First(&unchanged, user.Id).Error)
 	require.Equal(t, 9, unchanged.Quota)
 	gatewayState = "TRADE_SUCCESS"
+	// Disabling new checkout must not abandon payments already created.
+	settings.Enabled = false
+	disabledConfig, err := common.Marshal(settings)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configFile, disabledConfig, 0600))
+	beforeDisabled := gatewayRequests
+	response = post("/pay", `{"request_id":"disabled-new-request","amount":1}`)
+	require.Contains(t, response.Body.String(), "not been configured")
+	require.Equal(t, beforeDisabled, gatewayRequests)
 	for range 2 {
 		response = post("/notify", values.Encode())
 		require.Equal(t, http.StatusOK, response.Code)
@@ -161,6 +184,7 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	}
 	require.NoError(t, model.DB.First(&unchanged, user.Id).Error)
 	require.Equal(t, 500009, unchanged.Quota)
+	require.NoError(t, os.WriteFile(configFile, config, 0600))
 	response = post("/notify", values.Encode()+"&total_amount=2.88")
 	require.Equal(t, http.StatusBadRequest, response.Code)
 	before := gatewayRequests
@@ -177,6 +201,9 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	require.EqualValues(t, 500000, tokenOrder.RequestedAmount)
 	require.Equal(t, 500000, tokenOrder.CreditedQuota)
 	require.EqualValues(t, 1, model.GetTopUpByTradeNo(tokenOrder.OrderId).Amount)
+	response = post("/pay", `{"request_id":"token-units","amount":500000}`)
+	require.Contains(t, response.Body.String(), common.TopUpStatusSuccess)
+	require.NotContains(t, response.Body.String(), "qr_code", "a paid order recovered before checkout must not issue another payment link")
 	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeUSD
 	// A plan whose notification is lost is fulfilled by authenticated polling.
 	plan := model.SubscriptionPlan{Title: "HTTP plan", PriceAmount: 2.88, Currency: "CNY", Enabled: true,
@@ -195,7 +222,12 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	require.EqualValues(t, 1, count)
 	require.NoError(t, model.DB.First(&unchanged, user.Id).Error)
 	require.Equal(t, "http-pro", unchanged.Group)
-	require.Equal(t, 500009, unchanged.Quota, "subscription purchase must not also top up the wallet")
+	require.Equal(t, 1000009, unchanged.Quota, "subscription purchase must not also top up the wallet")
+	recorderList := httptest.NewRecorder()
+	router.ServeHTTP(recorderList, httptest.NewRequest(http.MethodGet, "/orders", nil))
+	require.Contains(t, recorderList.Body.String(), tokenOrder.OrderId)
+	require.NotContains(t, recorderList.Body.String(), settings.AppID)
+	require.NotContains(t, recorderList.Body.String(), settings.SellerID)
 	before = gatewayRequests
 	// Cross-user lookup must be rejected before contacting Alipay.
 	user.Id++
@@ -203,6 +235,9 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/orders/"+order.OrderId, nil))
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 	require.Equal(t, before, gatewayRequests)
+	recorderList = httptest.NewRecorder()
+	router.ServeHTTP(recorderList, httptest.NewRequest(http.MethodGet, "/orders", nil))
+	require.NotContains(t, recorderList.Body.String(), tokenOrder.OrderId)
 }
 
 type alipayHTTPTestTransport func(*http.Request) (*http.Response, error)

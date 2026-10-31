@@ -2846,7 +2846,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Related Projects",
     "footer.defaultCopyright": "All rights reserved.",
-    "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
+    "footer.newapi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
@@ -7358,6 +7358,20 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Alipay face-to-face": "Alipay face-to-face",
+    "Scan with Alipay to pay. Then check the payment status.": "Scan with Alipay to pay. Then check the payment status.",
+    "Payment pending": "Payment pending",
+    "Payment received": "Payment received",
+    "Check payment": "Check payment",
+    "Open Alipay checkout": "Open Alipay checkout",
+    "Recent Alipay orders": "Recent Alipay orders",
+    "Resume payment": "Resume payment",
+    "Closing this window keeps the order available for recovery.": "Closing this window keeps the order available for recovery.",
+    "Payment was not started because browser storage is unavailable.": "Payment was not started because browser storage is unavailable.",
+    "Please sign in again.": "Please sign in again.",
+    "Payment status could not be verified.": "Payment status could not be verified.",
+    "Alipay payment QR code": "Alipay payment QR code",
+    "Copy order number": "Copy order number"
   }
 }

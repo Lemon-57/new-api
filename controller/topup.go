@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -25,10 +26,11 @@ import (
 
 func GetTopUpInfo(c *gin.Context) {
 	complianceConfirmed := operation_setting.IsPaymentComplianceConfirmed()
+	directAlipayEnabled := isAlipayTopUpEnabled()
 
 	// 获取支付方式
-	payMethods := operation_setting.PayMethods
-	if !complianceConfirmed {
+	payMethods := slices.Clone(operation_setting.PayMethods)
+	if !complianceConfirmed || (directAlipayEnabled && !isEpayTopUpEnabled()) {
 		payMethods = []map[string]string{}
 	}
 
@@ -98,7 +100,7 @@ func GetTopUpInfo(c *gin.Context) {
 	}
 
 	data := gin.H{
-		"enable_alipay_topup":              isAlipayTopUpEnabled(),
+		"enable_alipay_topup":              directAlipayEnabled,
 		"enable_online_topup":              isEpayTopUpEnabled(),
 		"enable_stripe_topup":              isStripeTopUpEnabled(),
 		"enable_creem_topup":               isCreemTopUpEnabled(),
@@ -122,6 +124,9 @@ func GetTopUpInfo(c *gin.Context) {
 		"amount_options":          operation_setting.GetPaymentSetting().AmountOptions,
 		"discount":                operation_setting.GetPaymentSetting().AmountDiscount,
 		"topup_link":              common.TopUpLink,
+	}
+	if directAlipayEnabled {
+		data["pay_methods"] = append(payMethods, map[string]string{"name": "Alipay", "type": model.PaymentProviderAlipay, "min_topup": strconv.Itoa(operation_setting.MinTopUp)})
 	}
 	common.ApiSuccess(c, data)
 }

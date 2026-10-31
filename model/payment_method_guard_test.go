@@ -239,6 +239,16 @@ func alipayAccountingCases(t *testing.T, db *gorm.DB) {
 	require.True(t, already)
 	require.EqualValues(t, 1, countUserSubscriptionsForPaymentGuardTest(t, user.Id))
 	t.Log(fmt.Sprintf("credited_once=%d subscription_count=1 duplicate_transaction_rejected=true native_receipt_failure_rolled_back=true", 123456))
+	foreign := User{Username: "alipay-other", AffCode: "alipay-other", Status: common.UserStatusEnabled}
+	require.NoError(t, db.Create(&foreign).Error)
+	require.NoError(t, CreateAlipayOrder(&AlipayOrder{UserId: foreign.Id, RequestId: "other", OrderId: "other", AppId: order.AppId, AmountCents: 1, CreditedQuota: 1, RequestedAmount: 1}, nil, 1))
+	recent, err := ListRecentAlipayOrders(user.Id)
+	require.NoError(t, err)
+	require.Len(t, recent, 4)
+	require.Equal(t, planOrder.OrderId, recent[0].OrderId)
+	for _, item := range recent {
+		require.Equal(t, user.Id, item.UserId)
+	}
 }
 
 func TestAlipayWalletCreditKeepsCacheInSync(t *testing.T) {

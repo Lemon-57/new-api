@@ -37,6 +37,39 @@ describe('payment type classification', () => {
 })
 
 describe('payment dispatch', () => {
+  test('routes direct Alipay without falling back to Epay', async () => {
+    const calls: string[] = []
+    const processors = {
+      regular: async () => {
+        calls.push('epay')
+        return false
+      },
+      waffo: async () => false,
+      waffoPancake: async () => false,
+      alipay: async (amount: number) => {
+        calls.push(`alipay:${amount}`)
+        return true
+      },
+    }
+    expect(
+      await dispatchSelectedPayment(
+        { name: 'Alipay', type: 'alipay_direct' },
+        10,
+        null,
+        processors
+      )
+    ).toBe(true)
+    expect(calls).toEqual(['alipay:10'])
+    expect(
+      await dispatchSelectedPayment(
+        { name: 'Alipay', type: 'alipay_direct' },
+        10,
+        null,
+        { ...processors, alipay: undefined }
+      )
+    ).toBe(false)
+    expect(calls).toEqual(['alipay:10'])
+  })
   test('keeps the selected Waffo method index through confirmation', async () => {
     const calls: string[] = []
     const success = await dispatchSelectedPayment(

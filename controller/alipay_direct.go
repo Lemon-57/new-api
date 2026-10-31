@@ -40,7 +40,7 @@ func requestAlipayPay(c *gin.Context, subscription bool) {
 		return
 	}
 	client, settings, err := service.GetAlipayDirectClient()
-	if err != nil {
+	if err != nil || !settings.Enabled {
 		common.ApiErrorT(c, "Payment information has not been configured by administrator")
 		return
 	}
@@ -50,6 +50,7 @@ func requestAlipayPay(c *gin.Context, subscription bool) {
 		common.ApiError(c, err)
 		return
 	}
+	resuming := order != nil
 	if order == nil {
 		order = &model.AlipayOrder{UserId: userID, RequestId: req.RequestID, OrderId: "NALI" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 			AppId: settings.AppID, SellerId: settings.SellerID, PlanId: req.PlanID, RequestedAmount: req.Amount}
@@ -94,11 +95,29 @@ func requestAlipayPay(c *gin.Context, subscription bool) {
 				return
 			}
 			order = recovered
+			resuming = true
 		}
 	}
 	if order.PlanId != req.PlanID || order.RequestedAmount != req.Amount || order.AppId != settings.AppID || order.SellerId != settings.SellerID {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
+	}
+	if resuming && order.Status == common.TopUpStatusPending {
+		payment, err := client.Query(c.Request.Context(), pay.Order{OrderID: order.OrderId, AmountCents: order.AmountCents})
+		if err != nil {
+			common.ApiErrorT(c, "Failed to start payment")
+			return
+		}
+		if payment.State == pay.Paid {
+			if _, err := model.CompleteAlipayOrder(*payment, settings.AppID, settings.SellerID, c.ClientIP()); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			order.Status = common.TopUpStatusSuccess
+		} else if payment.State == pay.Closed {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
 	}
 	if order.Status == common.TopUpStatusSuccess {
 		common.ApiSuccess(c, gin.H{"order_id": order.OrderId, "status": order.Status, "amount_cents": order.AmountCents, "currency": "CNY"})
@@ -221,6 +240,15 @@ func isAlipayTopUpEnabled() bool {
 	if !operation_setting.IsPaymentComplianceConfirmed() {
 		return false
 	}
-	_, err := service.LoadAlipayDirectSettings()
-	return err == nil
+	settings, err := service.LoadAlipayDirectSettings()
+	return err == nil && settings.Enabled
+}
+
+func ListAlipayOrders(c *gin.Context) {
+	orders, err := model.ListRecentAlipayOrders(c.GetInt("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, orders)
 }
