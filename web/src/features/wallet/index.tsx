@@ -356,12 +356,11 @@ export function Wallet(props: WalletProps) {
               }
               loading={affiliateLoading}
             />
-            {topupInfo?.enable_alipay_topup && (
-              <AlipayOrdersCard
-                onResume={alipay.start}
-                processing={alipay.processing}
-              />
-            )}
+            <AlipayOrdersCard
+              enabled={!!topupInfo?.enable_alipay_topup}
+              onResume={alipay.start}
+              processing={alipay.processing}
+            />
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>
@@ -388,6 +387,7 @@ export function Wallet(props: WalletProps) {
         checking={alipay.checking}
         onCheck={alipay.check}
         onClose={alipay.close}
+        onCancel={alipay.cancel}
       />
 
       <TransferDialog

@@ -427,6 +427,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
         checking={alipay.checking}
         onCheck={alipay.check}
         onClose={alipay.close}
+        onCancel={alipay.cancel}
       />
     </>
   )

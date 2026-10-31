@@ -7388,6 +7388,11 @@
     "Alipay CNY per USD": "CNY par USD",
     "Alipay settings are managed by a private file": "Les paramètres Alipay sont gérés par un fichier privé",
     "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "Impossible d’enregistrer Alipay. Vérifiez les clés, l’URL de notification et les commandes existantes.",
-    "Use the dedicated Alipay settings endpoint": "Utilisez le point de configuration dédié à Alipay"
+    "Use the dedicated Alipay settings endpoint": "Utilisez le point de configuration dédié à Alipay",
+    "Cancel payment": "Annuler le paiement",
+    "Close unpaid order": "Fermer la commande impayée",
+    "Payment closed": "Commande de paiement fermée",
+    "Payment closure is awaiting confirmation. Check again.": "La fermeture du paiement attend confirmation. Vérifiez à nouveau.",
+    "Close this unpaid order? If payment has already succeeded, it will be credited instead.": "Fermer cette commande impayée ? Si le paiement a réussi, le compte sera crédité."
   }
 }

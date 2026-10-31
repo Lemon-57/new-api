@@ -334,6 +334,223 @@ it('formats CNY cents without exchange conversion in every interface language an
   }
 })
 
+it('keeps an uncertain cancellation in closing and confirms closure through an owner query', async () => {
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValueOnce({ data: { success: true, data: pending } })
+    .mockResolvedValueOnce({
+      data: { success: true, data: { ...pending, status: 'closing' } },
+    })
+  vi.spyOn(api, 'get').mockResolvedValueOnce({
+    data: { success: true, data: { ...pending, status: 'closed' } },
+  })
+  const paid = vi.fn()
+  const hook = renderHook(() => useAlipayPayment(paid), { wrapper: Wrapper })
+  await act(async () => {
+    await hook.result.current.start({ amount: 1 })
+  })
+  act(() => {
+    hook.result.current.cancel()
+  })
+  await waitFor(() =>
+    expect(hook.result.current.checkout?.status).toBe('closing')
+  )
+  expect(post).toHaveBeenLastCalledWith(
+    '/api/user/alipay/orders/NALI-test/close',
+    {}
+  )
+  expect(paid).not.toHaveBeenCalled()
+  act(() => {
+    hook.result.current.check()
+  })
+  await waitFor(() =>
+    expect(hook.result.current.checkout?.status).toBe('closed')
+  )
+  expect(paid).not.toHaveBeenCalled()
+})
+
+it('preserves the pending order and request identity when the cancel request fails', async () => {
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValueOnce({ data: { success: true, data: pending } })
+    .mockRejectedValueOnce(new Error('network unavailable'))
+  const hook = renderHook(() => useAlipayPayment(), { wrapper: Wrapper })
+  await act(async () => {
+    await hook.result.current.start({ amount: 1 })
+  })
+  const identity = (post.mock.calls[0][1] as { request_id: string }).request_id
+  act(() => {
+    hook.result.current.cancel()
+  })
+  await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(hook.result.current.checking).toBe(false))
+  expect(hook.result.current.checkout?.status).toBe('pending')
+  expect(rememberAlipayIntent(1, { amount: 1 })).toBe(identity)
+})
+
+it('credits the UI when payment won the cancellation race without calling it closed', async () => {
+  vi.spyOn(api, 'post')
+    .mockResolvedValueOnce({ data: { success: true, data: pending } })
+    .mockResolvedValueOnce({
+      data: { success: true, data: { ...pending, status: 'success' } },
+    })
+  const paid = vi.fn()
+  const hook = renderHook(() => useAlipayPayment(paid), { wrapper: Wrapper })
+  await act(async () => {
+    await hook.result.current.start({ amount: 1 })
+  })
+  act(() => {
+    hook.result.current.cancel()
+  })
+  await waitFor(() =>
+    expect(hook.result.current.checkout?.status).toBe('success')
+  )
+  await waitFor(() => expect(paid).toHaveBeenCalledTimes(1))
+})
+
+it('allows a new purchase identity after recovery reports that the previous order is closed', async () => {
+  const oldId = rememberAlipayIntent(1, { amount: 1 })
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: { ...pending, status: 'closed', qr_code: undefined },
+      },
+    })
+    .mockResolvedValueOnce({
+      data: { success: true, data: { ...pending, order_id: 'new-order' } },
+    })
+  const hook = renderHook(() => useAlipayPayment(), { wrapper: Wrapper })
+  await act(async () => {
+    expect(await hook.result.current.start({ amount: 1 })).toBe(true)
+  })
+  expect(hook.result.current.checkout?.status).toBe('closed')
+  await act(async () => {
+    await hook.result.current.start({ amount: 1 })
+  })
+  expect((post.mock.calls[0][1] as { request_id: string }).request_id).toBe(
+    oldId
+  )
+  expect((post.mock.calls[1][1] as { request_id: string }).request_id).not.toBe(
+    oldId
+  )
+})
+
+it('requires confirmation before cancelling and hides payment links while closure is uncertain', async () => {
+  const cancel = vi.fn()
+  const view = render(
+    <AlipayCheckoutDialog
+      checkout={pending}
+      checking={false}
+      onCheck={vi.fn()}
+      onClose={vi.fn()}
+      onCancel={cancel}
+    />
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel payment' }))
+  expect(cancel).not.toHaveBeenCalled()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Close unpaid order' })
+  )
+  expect(cancel).toHaveBeenCalledTimes(1)
+  view.rerender(
+    <AlipayCheckoutDialog
+      checkout={{ ...pending, status: 'closing' }}
+      checking={false}
+      onCheck={vi.fn()}
+      onClose={vi.fn()}
+      onCancel={cancel}
+    />
+  )
+  expect(
+    screen.queryByRole('img', { name: 'Alipay payment QR code' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: 'Open Alipay checkout' })
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent(
+    'Payment closure is awaiting confirmation. Check again.'
+  )
+  view.rerender(
+    <AlipayCheckoutDialog
+      checkout={{ ...pending, status: 'closed' }}
+      checking={false}
+      onCheck={vi.fn()}
+      onClose={vi.fn()}
+      onCancel={cancel}
+    />
+  )
+  expect(screen.getByRole('status')).toHaveTextContent('Payment closed')
+  expect(
+    screen.queryByRole('button', { name: 'Check payment' })
+  ).not.toBeInTheDocument()
+})
+
+it('keeps historical closing orders recoverable even when new Alipay checkout is disabled', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: [
+        {
+          ...pending,
+          status: 'closing',
+          request_id: 'closing-request',
+          requested_amount: 1,
+          plan_id: 0,
+        },
+      ],
+    },
+  })
+  const resume = vi.fn().mockResolvedValue(true)
+  render(
+    <AlipayOrdersCard enabled={false} onResume={resume} processing={false} />,
+    { wrapper: Wrapper }
+  )
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Check payment' })
+  )
+  expect(resume).toHaveBeenCalledWith({
+    request_id: 'closing-request',
+    amount: 1,
+  })
+})
+
+it('does not regress a confirmed closure when an older pending query finishes later', async () => {
+  vi.spyOn(api, 'post')
+    .mockResolvedValueOnce({ data: { success: true, data: pending } })
+    .mockResolvedValueOnce({
+      data: { success: true, data: { ...pending, status: 'closed' } },
+    })
+  let finish:
+    | ((response: { data: { success: boolean; data: typeof pending } }) => void)
+    | undefined
+  vi.spyOn(api, 'get').mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      })
+  )
+  const hook = renderHook(() => useAlipayPayment(), { wrapper: Wrapper })
+  await act(async () => {
+    await hook.result.current.start({ amount: 1 })
+  })
+  act(() => {
+    hook.result.current.check()
+  })
+  await waitFor(() => expect(finish).toBeDefined())
+  act(() => {
+    hook.result.current.cancel()
+  })
+  await waitFor(() =>
+    expect(hook.result.current.checkout?.status).toBe('closed')
+  )
+  await act(async () => {
+    finish?.({ data: { success: true, data: pending } })
+  })
+  expect(hook.result.current.checkout?.status).toBe('closed')
+})
+
 it('offers direct Alipay when Epay is disabled', async () => {
   const select = vi.fn()
   render(

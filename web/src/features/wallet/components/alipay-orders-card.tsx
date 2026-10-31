@@ -38,11 +38,20 @@ import type { ApiResponse } from '../types'
 interface Props {
   onResume: (intent: AlipayIntent) => Promise<boolean>
   processing: boolean
+  enabled?: boolean
 }
 
 export function AlipayOrdersCard(props: Props) {
   const { t, i18n } = useTranslation()
   const userId = useAuthStore((state) => state.auth.user?.id)
+  const statusLabel = (status: string): string => {
+    if (status === 'success') return t('Payment received')
+    if (status === 'closed') return t('Payment closed')
+    if (status === 'closing') {
+      return t('Payment closure is awaiting confirmation. Check again.')
+    }
+    return t('Payment pending')
+  }
   const orders = useQuery({
     queryKey: ['alipay-orders', userId],
     enabled: !!userId,
@@ -52,6 +61,9 @@ export function AlipayOrdersCard(props: Props) {
           .data
       ).data || [],
   })
+  if (props.enabled === false && orders.isSuccess && orders.data.length === 0) {
+    return null
+  }
   let content: ReactNode
   if (orders.isPending) content = <LoadingState />
   else if (orders.isError) {
@@ -75,13 +87,10 @@ export function AlipayOrdersCard(props: Props) {
               order.amount_cents,
               i18n.resolvedLanguage || i18n.language
             )}{' '}
-            ·{' '}
-            {order.status === 'success'
-              ? t('Payment received')
-              : t('Payment pending')}
+            · {statusLabel(order.status)}
           </p>
         </div>
-        {order.status === 'pending' && (
+        {(order.status === 'pending' || order.status === 'closing') && (
           <Button
             variant='outline'
             disabled={props.processing}
@@ -94,7 +103,9 @@ export function AlipayOrdersCard(props: Props) {
               })
             }}
           >
-            {t('Resume payment')}
+            {order.status === 'closing'
+              ? t('Check payment')
+              : t('Resume payment')}
           </Button>
         )}
       </div>

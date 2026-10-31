@@ -43,6 +43,11 @@ export function useAlipayPayment(onPaid?: () => void | Promise<void>) {
   const queryClient = useQueryClient()
   const userId = useAuthStore((state) => state.auth.user?.id)
   const generation = useRef(0)
+  const latestOutcome = useRef<{
+    actor: number
+    operation: number
+    status: string
+  } | null>(null)
   const [state, setState] = useState<{
     actor: number
     data: AlipayCheckout
@@ -65,8 +70,19 @@ export function useAlipayPayment(onPaid?: () => void | Promise<void>) {
     ) {
       return false
     }
+    const previous = latestOutcome.current
+    if (previous?.actor === actor && previous.operation === operation) {
+      if (
+        (['success', 'closed'].includes(previous.status) &&
+          data.status !== previous.status) ||
+        (previous.status === 'closing' && data.status === 'pending')
+      ) {
+        return false
+      }
+    }
+    latestOutcome.current = { actor, operation, status: data.status }
     setState({ actor, data, intent, operation })
-    if (data.status === 'success') {
+    if (data.status === 'success' || data.status === 'closed') {
       const key = alipayIntentKey(actor, intent)
       try {
         if (sessionStorage.getItem(key) === intent.request_id) {
@@ -76,9 +92,11 @@ export function useAlipayPayment(onPaid?: () => void | Promise<void>) {
         /* Payment is confirmed even if storage cleanup fails. */
       }
       void queryClient.invalidateQueries({ queryKey: ['alipay-orders', actor] })
-      void Promise.resolve()
-        .then(() => onPaid?.())
-        .catch(handleServerError)
+      if (data.status === 'success') {
+        void Promise.resolve()
+          .then(() => onPaid?.())
+          .catch(handleServerError)
+      }
     }
     return true
   }
@@ -116,12 +134,12 @@ export function useAlipayPayment(onPaid?: () => void | Promise<void>) {
         !data.order_id ||
         !Number.isSafeInteger(data.amount_cents) ||
         data.amount_cents <= 0 ||
-        !['pending', 'success'].includes(data.status)
+        !['pending', 'closing', 'closed', 'success'].includes(data.status)
       ) {
         throw createServerError(response, t('Payment request failed'))
       }
       if (
-        data.status !== 'success' &&
+        data.status === 'pending' &&
         (!data.qr_code || !isAlipayCheckoutUrl(data.qr_code)) &&
         (!data.pay_url || !isAlipayCheckoutUrl(data.pay_url))
       ) {
@@ -157,7 +175,9 @@ export function useAlipayPayment(onPaid?: () => void | Promise<void>) {
         !response.data ||
         response.data.order_id !== checkout.order_id ||
         response.data.amount_cents !== checkout.amount_cents ||
-        !['pending', 'success'].includes(response.data.status)
+        !['pending', 'closing', 'closed', 'success'].includes(
+          response.data.status
+        )
       ) {
         throw createServerError(response)
       }
@@ -175,12 +195,54 @@ export function useAlipayPayment(onPaid?: () => void | Promise<void>) {
       handleServerError(error, t('Payment status could not be verified.')),
   })
 
+  const cancelMutation = useMutation({
+    mutationFn: async () => {
+      if (!checkout || !currentIntent || !userId || !ownedState) {
+        throw new Error(t('Invalid parameters'))
+      }
+      const response = requireServerSuccess(
+        (
+          await api.post<ApiResponse<AlipayOrder>>(
+            `/api/user/alipay/orders/${encodeURIComponent(checkout.order_id)}/close`,
+            {}
+          )
+        ).data
+      )
+      if (
+        !response.success ||
+        !response.data ||
+        response.data.order_id !== checkout.order_id ||
+        response.data.amount_cents !== checkout.amount_cents ||
+        !['closing', 'closed', 'success'].includes(response.data.status)
+      ) {
+        throw createServerError(response)
+      }
+      return {
+        data: { ...checkout, ...response.data },
+        actor: userId,
+        intent: currentIntent,
+        operation: ownedState.operation,
+      }
+    },
+    onSuccess: ({ data, actor, intent, operation }) => {
+      if (received(data, actor, intent, operation)) {
+        void queryClient.invalidateQueries({
+          queryKey: ['alipay-orders', actor],
+        })
+      }
+    },
+    onError: (error) =>
+      handleServerError(error, t('Payment status could not be verified.')),
+  })
+
   return {
     checkout,
     processing: startMutation.isPending,
-    checking: checkMutation.isPending,
+    checking: checkMutation.isPending || cancelMutation.isPending,
+    cancel: () => cancelMutation.mutate(),
     close: () => {
       generation.current++
+      latestOutcome.current = null
       setState(null)
     },
     check: () => checkMutation.mutate(),

@@ -7388,6 +7388,11 @@
     "Alipay CNY per USD": "每美元人民币汇率",
     "Alipay settings are managed by a private file": "支付宝配置由私有文件管理",
     "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "支付宝配置保存失败，请检查密钥、回调地址和已有订单。",
-    "Use the dedicated Alipay settings endpoint": "请使用支付宝专用配置接口"
+    "Use the dedicated Alipay settings endpoint": "请使用支付宝专用配置接口",
+    "Cancel payment": "取消付款",
+    "Close unpaid order": "关闭未付款订单",
+    "Payment closed": "付款订单已关闭",
+    "Payment closure is awaiting confirmation. Check again.": "订单关闭尚待确认，请再次查询。",
+    "Close this unpaid order? If payment has already succeeded, it will be credited instead.": "确认关闭此未付款订单？若付款已成功，将正常到账。"
   }
 }

@@ -83,6 +83,11 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	var gatewayRequests int
 	var refundRequests []string
 	refundQuerySuccess := false
+	tradeStates := map[string]string{}
+	closeReplyLost := false
+	closeQueryUnavailable := false
+	closeTradeMissing := false
+	cancelDuringPrecreate := false
 	gatewayState := "WAIT_BUYER_PAY"
 	oldTransport := http.DefaultTransport
 	http.DefaultTransport = alipayHTTPTestTransport(func(req *http.Request) (*http.Response, error) {
@@ -93,7 +98,30 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 		method := req.PostForm.Get("method")
 		body := fmt.Sprintf(`{"code":"10000","out_trade_no":%q,"qr_code":"https://qr.alipay.com/test"}`, biz["out_trade_no"])
 		if method == "alipay.trade.query" {
-			body = fmt.Sprintf(`{"code":"10000","out_trade_no":%q,"trade_no":%q,"total_amount":"2.88","trade_status":%q}`, biz["out_trade_no"], "ali-"+biz["out_trade_no"].(string), gatewayState)
+			if closeQueryUnavailable {
+				return nil, context.DeadlineExceeded
+			}
+			state := tradeStates[biz["out_trade_no"].(string)]
+			if state == "" {
+				state = gatewayState
+			}
+			body = fmt.Sprintf(`{"code":"10000","out_trade_no":%q,"trade_no":%q,"total_amount":"2.88","trade_status":%q}`, biz["out_trade_no"], "ali-"+biz["out_trade_no"].(string), state)
+			if closeTradeMissing {
+				body = `{"code":"40004","sub_code":"ACQ.TRADE_NOT_EXIST"}`
+			}
+		} else if method == "alipay.trade.close" {
+			id := biz["out_trade_no"].(string)
+			if closeTradeMissing {
+				body = `{"code":"40004","sub_code":"ACQ.TRADE_NOT_EXIST"}`
+			} else if tradeStates[id] == "TRADE_SUCCESS" {
+				body = `{"code":"40004","sub_code":"ACQ.TRADE_STATUS_ERROR"}`
+			} else {
+				tradeStates[id] = "TRADE_CLOSED"
+				if closeReplyLost {
+					return nil, context.DeadlineExceeded
+				}
+				body = fmt.Sprintf(`{"code":"10000","out_trade_no":%q,"trade_no":%q}`, id, "ali-"+id)
+			}
 		} else if method == "alipay.trade.refund" {
 			refundRequests = append(refundRequests, biz["out_request_no"].(string))
 			require.Equal(t, "0.88", biz["refund_amount"])
@@ -105,6 +133,10 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 			}
 		} else {
 			require.Equal(t, "alipay.trade.precreate", method)
+			if cancelDuringPrecreate {
+				_, err := model.BeginAlipayOrderClose(biz["out_trade_no"].(string), user.Id)
+				require.NoError(t, err)
+			}
 		}
 		digest := sha256.Sum256([]byte(body))
 		signature, err := rsa.SignPKCS1v15(rand.Reader, ali, crypto.SHA256, digest[:])
@@ -119,6 +151,7 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	router.POST("/subscription", SubscriptionRequestAlipayPay)
 	router.POST("/notify", AlipayNotify)
 	router.GET("/orders/:order_id", QueryAlipayOrder)
+	router.POST("/orders/:order_id/close", CancelAlipayOrder)
 	router.GET("/orders", ListAlipayOrders)
 	router.GET("/info", GetTopUpInfo)
 	post := func(path, body string) *httptest.ResponseRecorder {
@@ -294,6 +327,92 @@ func TestAlipayDirectCheckoutAndNotification(t *testing.T) {
 	recorderList = httptest.NewRecorder()
 	router.ServeHTTP(recorderList, httptest.NewRequest(http.MethodGet, "/orders", nil))
 	require.NotContains(t, recorderList.Body.String(), tokenOrder.OrderId)
+	user.Id--
+	// Closure is a durable saga: a lost provider reply leaves closing, a
+	// subsequent owner query reconciles it, and the checkout is never reissued.
+	response = post("/pay", `{"request_id":"closing-http","amount":1}`)
+	require.Contains(t, response.Body.String(), "qr.alipay.com")
+	closingOrder, err := model.GetAlipayOrderByRequest(user.Id, "closing-http")
+	require.NoError(t, err)
+	tradeStates[closingOrder.OrderId] = "WAIT_BUYER_PAY"
+	closeReplyLost, closeQueryUnavailable = true, true
+	response = post("/orders/"+closingOrder.OrderId+"/close", `{}`)
+	require.Contains(t, response.Body.String(), `"status":"closing"`)
+	still, err := model.GetAlipayOrder(closingOrder.OrderId)
+	require.NoError(t, err)
+	require.Equal(t, model.AlipayOrderClosing, still.Status)
+	closeReplyLost, closeQueryUnavailable = false, false
+	recoveredClose := httptest.NewRecorder()
+	router.ServeHTTP(recoveredClose, httptest.NewRequest(http.MethodGet, "/orders/"+closingOrder.OrderId, nil))
+	require.Contains(t, recoveredClose.Body.String(), `"status":"closed"`)
+	require.Equal(t, common.TopUpStatusExpired, model.GetTopUpByTradeNo(closingOrder.OrderId).Status)
+	beforeClosedRetry := gatewayRequests
+	response = post("/pay", `{"request_id":"closing-http","amount":1}`)
+	require.Contains(t, response.Body.String(), `"status":"closed"`)
+	require.NotContains(t, response.Body.String(), "qr_code")
+	require.Equal(t, beforeClosedRetry, gatewayRequests)
+	// Gateway payment can win the race even after local cancellation intent.
+	response = post("/pay", `{"request_id":"paid-while-closing","amount":1}`)
+	require.Contains(t, response.Body.String(), "qr.alipay.com")
+	paidOrder, err := model.GetAlipayOrderByRequest(user.Id, "paid-while-closing")
+	require.NoError(t, err)
+	tradeStates[paidOrder.OrderId] = "TRADE_SUCCESS"
+	response = post("/orders/"+paidOrder.OrderId+"/close", `{}`)
+	require.Contains(t, response.Body.String(), `"status":"success"`)
+	var afterRace model.User
+	require.NoError(t, model.DB.First(&afterRace, user.Id).Error)
+	require.Equal(t, 1500009, afterRace.Quota)
+	response = post("/orders/"+paidOrder.OrderId+"/close", `{}`)
+	require.Contains(t, response.Body.String(), `"status":"success"`)
+	require.NoError(t, model.DB.First(&afterRace, user.Id).Error)
+	require.Equal(t, 1500009, afterRace.Quota)
+	for _, event := range []struct{ orderID, status string }{
+		{closingOrder.OrderId, "TRADE_SUCCESS"}, // delayed paid event after verified close
+		{paidOrder.OrderId, "TRADE_CLOSED"},     // stale close event while gateway confirms paid
+	} {
+		notice := url.Values{"app_id": {settings.AppID}, "seller_id": {settings.SellerID}, "sign_type": {"RSA2"},
+			"out_trade_no": {event.orderID}, "trade_no": {"ali-" + event.orderID}, "trade_status": {event.status}, "total_amount": {"2.88"}}
+		noticeKeys := make([]string, 0, len(notice))
+		for key := range notice {
+			if key != "sign_type" {
+				noticeKeys = append(noticeKeys, key)
+			}
+		}
+		slices.Sort(noticeKeys)
+		pieces := make([]string, 0, len(noticeKeys))
+		for _, key := range noticeKeys {
+			pieces = append(pieces, key+"="+notice.Get(key))
+		}
+		digest := sha256.Sum256([]byte(strings.Join(pieces, "&")))
+		signature, err := rsa.SignPKCS1v15(rand.Reader, ali, crypto.SHA256, digest[:])
+		require.NoError(t, err)
+		notice.Set("sign", base64.StdEncoding.EncodeToString(signature))
+		response = post("/notify", notice.Encode())
+		require.Equal(t, http.StatusOK, response.Code)
+		require.Equal(t, "success", response.Body.String())
+	}
+	require.NoError(t, model.DB.First(&afterRace, user.Id).Error)
+	require.Equal(t, 1500009, afterRace.Quota, "event delivery order cannot mint or reverse wallet credit")
+	// Trade-not-exist alone is not a closed trade: its create call might still
+	// be in flight. Keep the marker and retain the plan/checkout reservation.
+	response = post("/pay", `{"request_id":"missing-during-close","amount":1}`)
+	require.Contains(t, response.Body.String(), "qr.alipay.com")
+	missing, err := model.GetAlipayOrderByRequest(user.Id, "missing-during-close")
+	require.NoError(t, err)
+	closeTradeMissing = true
+	response = post("/orders/"+missing.OrderId+"/close", `{}`)
+	require.Contains(t, response.Body.String(), `"status":"closing"`)
+	closeTradeMissing = false
+	cancelDuringPrecreate = true
+	response = post("/pay", `{"request_id":"close-during-precreate","amount":1}`)
+	cancelDuringPrecreate = false
+	require.Contains(t, response.Body.String(), `"status":"closing"`)
+	require.NotContains(t, response.Body.String(), "qr_code", "a cancellation accepted during precreate must suppress its obsolete checkout")
+	beforeForeign := gatewayRequests
+	user.Id++
+	response = post("/orders/"+missing.OrderId+"/close", `{}`)
+	require.Equal(t, http.StatusNotFound, response.Code)
+	require.Equal(t, beforeForeign, gatewayRequests)
 }
 
 type alipayHTTPTestTransport func(*http.Request) (*http.Response, error)

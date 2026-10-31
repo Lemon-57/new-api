@@ -17,8 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QRCodeSVG } from 'qrcode.react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { CopyButton } from '@/components/copy-button'
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
@@ -35,10 +37,14 @@ interface Props {
   checking: boolean
   onCheck: () => void
   onClose: () => void
+  onCancel?: () => void
 }
 
 export function AlipayCheckoutDialog(props: Props) {
   const { t, i18n } = useTranslation()
+  const [confirmationOrder, setConfirmationOrder] = useState<string | null>(
+    null
+  )
   const order = props.checkout
   const qr =
     order?.qr_code && isAlipayCheckoutUrl(order.qr_code)
@@ -50,80 +56,122 @@ export function AlipayCheckoutDialog(props: Props) {
       : undefined
   const appUrl = qr ? alipayAppLink(qr) : undefined
   const paid = order?.status === 'success'
+  const pending = order?.status === 'pending'
+  const closing = order?.status === 'closing'
+  const closed = order?.status === 'closed'
+  let statusLabel = t('Payment pending')
+  if (paid) statusLabel = t('Payment received')
+  else if (closing) {
+    statusLabel = t('Payment closure is awaiting confirmation. Check again.')
+  } else if (closed) statusLabel = t('Payment closed')
+  const dismiss = () => {
+    setConfirmationOrder(null)
+    props.onClose()
+  }
   return (
-    <Dialog
-      open={!!order}
-      onOpenChange={(open) => {
-        if (!open) props.onClose()
-      }}
-      title={t('Alipay face-to-face')}
-      description={t('Scan with Alipay to pay. Then check the payment status.')}
-      contentClassName='sm:max-w-md'
-      footer={
-        <>
-          <Button variant='outline' onClick={props.onClose}>
-            {t('Close')}
-          </Button>
-          {!paid && (
-            <Button onClick={props.onCheck} disabled={props.checking}>
-              {t('Check payment')}
+    <>
+      <Dialog
+        open={!!order}
+        onOpenChange={(open) => {
+          if (!open) dismiss()
+        }}
+        title={t('Alipay face-to-face')}
+        description={t(
+          'Scan with Alipay to pay. Then check the payment status.'
+        )}
+        contentClassName='sm:max-w-md'
+        footer={
+          <>
+            <Button variant='outline' onClick={dismiss}>
+              {t('Close')}
             </Button>
-          )}
-        </>
-      }
-    >
-      {order && (
-        <div className='space-y-4 text-center'>
-          <p className='text-2xl font-semibold'>
-            {formatAlipayAmount(
-              order.amount_cents,
-              i18n.resolvedLanguage || i18n.language
+            {pending && props.onCancel && (
+              <Button
+                variant='destructive'
+                disabled={props.checking}
+                onClick={() => setConfirmationOrder(order?.order_id || null)}
+              >
+                {t('Cancel payment')}
+              </Button>
             )}
-          </p>
-          <p role='status'>
-            {paid ? t('Payment received') : t('Payment pending')}
-          </p>
-          {!paid && qr && (
-            <div className='mx-auto w-fit rounded-lg bg-white p-3'>
-              <QRCodeSVG
-                value={qr}
-                size={224}
-                role='img'
-                aria-label={t('Alipay payment QR code')}
-                marginSize={4}
+            {(pending || closing) && (
+              <Button onClick={props.onCheck} disabled={props.checking}>
+                {t('Check payment')}
+              </Button>
+            )}
+          </>
+        }
+      >
+        {order && (
+          <div className='space-y-4 text-center'>
+            <p className='text-2xl font-semibold'>
+              {formatAlipayAmount(
+                order.amount_cents,
+                i18n.resolvedLanguage || i18n.language
+              )}
+            </p>
+            <p role='status'>{statusLabel}</p>
+            {pending && qr && (
+              <div className='mx-auto w-fit rounded-lg bg-white p-3'>
+                <QRCodeSVG
+                  value={qr}
+                  size={224}
+                  role='img'
+                  aria-label={t('Alipay payment QR code')}
+                  marginSize={4}
+                />
+              </div>
+            )}
+            {pending && appUrl && (
+              <Button variant='outline' render={<a href={appUrl} />}>
+                {t('Open Alipay checkout')}
+              </Button>
+            )}
+            {pending && !qr && payUrl && (
+              <Button
+                render={
+                  <a href={payUrl} target='_blank' rel='noopener noreferrer' />
+                }
+              >
+                {t('Open Alipay checkout')}
+              </Button>
+            )}
+            <div className='flex items-center justify-center gap-2'>
+              <span className='font-mono text-xs break-all'>
+                {order.order_id}
+              </span>
+              <CopyButton
+                value={order.order_id}
+                aria-label={t('Copy order number')}
               />
             </div>
-          )}
-          {!paid && appUrl && (
-            <Button variant='outline' render={<a href={appUrl} />}>
-              {t('Open Alipay checkout')}
-            </Button>
-          )}
-          {!paid && !qr && payUrl && (
-            <Button
-              render={
-                <a href={payUrl} target='_blank' rel='noopener noreferrer' />
-              }
-            >
-              {t('Open Alipay checkout')}
-            </Button>
-          )}
-          <div className='flex items-center justify-center gap-2'>
-            <span className='font-mono text-xs break-all'>
-              {order.order_id}
-            </span>
-            <CopyButton
-              value={order.order_id}
-              aria-label={t('Copy order number')}
-            />
+            {(pending || closing) && (
+              <p className='text-muted-foreground text-xs'>
+                {t(
+                  'Closing this window keeps the order available for recovery.'
+                )}
+              </p>
+            )}
           </div>
-          {!paid && (
-            <p className='text-muted-foreground text-xs'>
-              {t('Closing this window keeps the order available for recovery.')}
-            </p>
-          )}
-        </div>
-      )}
-    </Dialog>
+        )}
+      </Dialog>
+      <ConfirmDialog
+        open={!!order && pending && confirmationOrder === order.order_id}
+        onOpenChange={(open) => {
+          if (!open) setConfirmationOrder(null)
+        }}
+        title={t('Cancel payment')}
+        desc={t(
+          'Close this unpaid order? If payment has already succeeded, it will be credited instead.'
+        )}
+        confirmText={t('Close unpaid order')}
+        disabled={props.checking}
+        destructive
+        handleConfirm={() => {
+          setConfirmationOrder(null)
+          props.onCancel?.()
+        }}
+      />
+    </>
   )
 }

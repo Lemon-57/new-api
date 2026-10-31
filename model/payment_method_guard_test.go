@@ -262,6 +262,55 @@ func alipayAccountingCases(t *testing.T, db *gorm.DB) {
 	for _, item := range recent {
 		require.Equal(t, user.Id, item.UserId)
 	}
+	closeWallet := &AlipayOrder{UserId: user.Id, RequestId: "close-wallet", OrderId: "close-wallet", AppId: order.AppId, SellerId: order.SellerId,
+		AmountCents: 288, CreditedQuota: 17, RequestedAmount: 1}
+	require.NoError(t, CreateAlipayOrder(closeWallet, nil, 1))
+	_, err = BeginAlipayOrderClose(closeWallet.OrderId, foreign.Id)
+	require.Error(t, err, "closure must enforce ownership inside the transaction")
+	for range 2 {
+		closing, err := BeginAlipayOrderClose(closeWallet.OrderId, user.Id)
+		require.NoError(t, err)
+		require.Equal(t, AlipayOrderClosing, closing.Status)
+	}
+	// If payment won the gateway race, a closing order must still fulfill once.
+	paidClosing := pay.Payment{OrderID: closeWallet.OrderId, TradeNo: "paid-before-close", State: pay.Paid, AmountCents: 288}
+	for range 2 {
+		_, err := CompleteAlipayOrder(paidClosing, order.AppId, order.SellerId, "127.0.0.1")
+		require.NoError(t, err)
+	}
+	require.Equal(t, 123484, getUserQuotaForPaymentGuardTest(t, user.Id))
+	require.Error(t, CompleteAlipayOrderClose(pay.Payment{OrderID: closeWallet.OrderId, TradeNo: "paid-before-close", State: pay.Closed, AmountCents: 288}, order.AppId, order.SellerId), "closure must not undo a paid receipt")
+	closeWallet.RequestId, closeWallet.OrderId = "unpaid-close", "unpaid-close"
+	require.NoError(t, CreateAlipayOrder(closeWallet, nil, 1))
+	_, err = BeginAlipayOrderClose(closeWallet.OrderId, user.Id)
+	require.NoError(t, err)
+	closed := pay.Payment{OrderID: closeWallet.OrderId, TradeNo: "unpaid-trade", State: pay.Closed, AmountCents: 288}
+	require.Error(t, CompleteAlipayOrderClose(closed, "wrong-app", order.SellerId))
+	// A receipt mismatch rolls back closure; it is not silently reconciled.
+	require.NoError(t, db.Model(&TopUp{}).Where("trade_no = ?", closeWallet.OrderId).Update("payment_provider", PaymentProviderEpay).Error)
+	require.Error(t, CompleteAlipayOrderClose(closed, order.AppId, order.SellerId))
+	stillClosing, err := GetAlipayOrder(closeWallet.OrderId)
+	require.NoError(t, err)
+	require.Equal(t, AlipayOrderClosing, stillClosing.Status)
+	require.NoError(t, db.Model(&TopUp{}).Where("trade_no = ?", closeWallet.OrderId).Update("payment_provider", PaymentProviderAlipay).Error)
+	for range 2 {
+		require.NoError(t, CompleteAlipayOrderClose(closed, order.AppId, order.SellerId))
+	}
+	require.Equal(t, common.TopUpStatusExpired, GetTopUpByTradeNo(closeWallet.OrderId).Status)
+	require.Equal(t, 123484, getUserQuotaForPaymentGuardTest(t, user.Id))
+	closingPlan := &AlipayOrder{UserId: foreign.Id, RequestId: "closing-plan", OrderId: "closing-plan", AppId: order.AppId, SellerId: order.SellerId,
+		AmountCents: 288, PlanId: plan.Id}
+	require.NoError(t, CreateAlipayOrder(closingPlan, plan, 0))
+	_, err = BeginAlipayOrderClose(closingPlan.OrderId, foreign.Id)
+	require.NoError(t, err)
+	secondPlan := *closingPlan
+	secondPlan.RequestId, secondPlan.OrderId = "next-plan", "next-plan"
+	require.Error(t, CreateAlipayOrder(&secondPlan, plan, 0), "uncertain closure must retain the reserved purchase limit")
+	require.NoError(t, CompleteAlipayOrderClose(pay.Payment{OrderID: closingPlan.OrderId, TradeNo: "closed-plan-trade", State: pay.Closed, AmountCents: 288}, order.AppId, order.SellerId))
+	var expiredPlanOrder SubscriptionOrder
+	require.NoError(t, db.Where("trade_no = ?", closingPlan.OrderId).First(&expiredPlanOrder).Error)
+	require.Equal(t, common.TopUpStatusExpired, expiredPlanOrder.Status)
+	require.NoError(t, CreateAlipayOrder(&secondPlan, plan, 0), "verified closure releases the plan reservation")
 	// Managed configuration is a single committed option on every dialect.
 	// Disabled drafts may omit real credentials; enabling cannot bypass validation.
 	draft := pay.Settings{Enabled: false, CNYPerUSD: "7.2", Config: pay.Config{AppID: "fixture-settings", Sandbox: true,
@@ -351,6 +400,10 @@ func TestAlipayOrderProcessRecovery(t *testing.T) {
 		already, err := CompleteAlipayOrder(payment, "test-app", "", "127.0.0.1")
 		require.NoError(t, err)
 		require.False(t, already)
+		require.NoError(t, CreateAlipayOrder(&AlipayOrder{UserId: user.Id, RequestId: "recover-close", OrderId: "recover-close", AppId: "test-app", AmountCents: 1, CreditedQuota: 7, RequestedAmount: 1}, nil, 1))
+		_, err = BeginAlipayOrderClose("recover-close", user.Id)
+		require.NoError(t, err)
+		require.NoError(t, CompleteAlipayOrderClose(pay.Payment{OrderID: "recover-close", TradeNo: "recover-close-trade", AmountCents: 1, State: pay.Closed}, "test-app", ""))
 		fmt.Println("committed_once; exiting before caller acknowledgement")
 		os.Exit(0) // Deliberately omit connection close and a response to the caller.
 	}
@@ -364,6 +417,11 @@ func TestAlipayOrderProcessRecovery(t *testing.T) {
 	var receipts int64
 	require.NoError(t, db.Model(&TopUp{}).Where("trade_no = ?", payment.OrderID).Count(&receipts).Error)
 	require.EqualValues(t, 1, receipts)
+	closed, err := GetAlipayOrder("recover-close")
+	require.NoError(t, err)
+	require.Equal(t, AlipayOrderClosed, closed.Status)
+	require.NoError(t, CompleteAlipayOrderClose(pay.Payment{OrderID: closed.OrderId, TradeNo: "recover-close-trade", AmountCents: 1, State: pay.Closed}, "test-app", ""))
+	require.Equal(t, common.TopUpStatusExpired, GetTopUpByTradeNo(closed.OrderId).Status)
 }
 
 func insertSubscriptionPlanForPaymentGuardTest(t *testing.T, id int) *SubscriptionPlan {

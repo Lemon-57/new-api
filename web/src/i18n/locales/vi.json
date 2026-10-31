@@ -7388,6 +7388,11 @@
     "Alipay CNY per USD": "CNY mỗi USD",
     "Alipay settings are managed by a private file": "Cấu hình Alipay được quản lý bằng tệp riêng",
     "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "Không thể lưu Alipay. Kiểm tra khóa, URL thông báo và đơn hiện có.",
-    "Use the dedicated Alipay settings endpoint": "Dùng giao diện cấu hình riêng của Alipay"
+    "Use the dedicated Alipay settings endpoint": "Dùng giao diện cấu hình riêng của Alipay",
+    "Cancel payment": "Hủy thanh toán",
+    "Close unpaid order": "Đóng đơn chưa thanh toán",
+    "Payment closed": "Đơn thanh toán đã đóng",
+    "Payment closure is awaiting confirmation. Check again.": "Đang chờ xác nhận đóng đơn. Hãy kiểm tra lại.",
+    "Close this unpaid order? If payment has already succeeded, it will be credited instead.": "Đóng đơn chưa thanh toán này? Nếu đã thanh toán thành công, tài khoản vẫn được ghi có."
   }
 }

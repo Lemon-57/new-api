@@ -7388,6 +7388,11 @@
     "Alipay CNY per USD": "CNY за USD",
     "Alipay settings are managed by a private file": "Настройки Alipay управляются закрытым файлом",
     "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "Не удалось сохранить Alipay. Проверьте ключи, URL уведомлений и существующие заказы.",
-    "Use the dedicated Alipay settings endpoint": "Используйте отдельный интерфейс настроек Alipay"
+    "Use the dedicated Alipay settings endpoint": "Используйте отдельный интерфейс настроек Alipay",
+    "Cancel payment": "Отменить оплату",
+    "Close unpaid order": "Закрыть неоплаченный заказ",
+    "Payment closed": "Платёжный заказ закрыт",
+    "Payment closure is awaiting confirmation. Check again.": "Закрытие платежа ожидает подтверждения. Проверьте ещё раз.",
+    "Close this unpaid order? If payment has already succeeded, it will be credited instead.": "Закрыть неоплаченный заказ? Если оплата уже прошла, средства будут зачислены."
   }
 }

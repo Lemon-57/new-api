@@ -65,6 +65,7 @@ Routes:
 - `POST /api/subscription/alipay/pay`: authenticated plan checkout.
 - `GET /api/user/alipay/orders/:order_id`: owner-only payment reconciliation.
 - `GET /api/user/alipay/orders`: owner-scoped recent-order recovery list.
+- `POST /api/user/alipay/orders/:order_id/close`: owner-only unpaid cancellation.
 - `POST /api/user/alipay/notify`: bounded RSA2-verified notification followed by
   an independent signed gateway query. Browser returns never fulfill orders.
 
@@ -131,7 +132,7 @@ no application console error and a passing API flow. QR rendering and the actual
 human click/scan therefore remain unverified in the browser; this is recorded as
 an acceptance gap rather than inferred from the successful HTTP probe.
 
-Remaining acceptance gates: external refund/close accounting and wallet-reversal
+Remaining acceptance gates: external refund accounting and wallet-reversal
 policy;
 late, reordered and refunded trade handling; SQL-to-Redis crash recovery; native
 runtime acceptance of managed configuration; complete browser payment tests;
@@ -179,3 +180,39 @@ successful responses plus a terminal retry with no second provider submission.
 These settings and refund-service fixes have not been installed into the running
 v2 browser candidate. A successful test/build does not establish live Alipay
 merchant acceptance, complete refund accounting, or replacement readiness.
+
+## Unpaid closure acceptance
+
+Unpaid cancellation now persists `closing` before calling the gateway. Only a
+signed trade query confirming `TRADE_CLOSED` commits `closed` and expires the
+native wallet/subscription receipt. Both updates share a transaction. A lost
+provider response or query failure keeps `closing`, and later owner queries
+retry reconciliation. `pending` and `closing` both reserve a plan purchase slot;
+only verified closure releases it. A paid order cannot be reversed by this path.
+
+If the gateway reports payment succeeded while local cancellation was in flight,
+the closing order fulfills exactly once. Notifications are checked against the
+current gateway state, so delayed paid/closed notifications do not override the
+verified outcome. A concurrent close accepted during precreate suppresses the
+now-obsolete QR/page link. Retrying the original purchase identity after closure
+returns the closed order rather than issuing another checkout.
+
+The UI uses the existing ConfirmDialog before unpaid cancellation, distinguishes
+pending/closing/closed/success, hides payment links while closing, and rejects late
+pending results after a terminal outcome. Closing a dialog still only dismisses
+it. Historical orders remain recoverable when new Alipay checkout is disabled.
+
+The same real SQLite 3.50.4, PostgreSQL 18.6 and MySQL 8.0.44 matrix was rerun for
+these transaction changes, covering fresh/upgrade startup twice, ownership,
+receipt rollback, paid-versus-close handling and plan-slot retention/release. A
+separate process recovery test now also checks committed closure after restart.
+The signed SDK HTTP fixture covers lost close replies, unavailable queries,
+payment winning closure, reordered notifications, and precreate racing a close.
+The related frontend suites now contain 32 passing tests; type checking, affected
+file lint and the production frontend build passed.
+
+A gateway `TRADE_NOT_EXIST` response remains uncertain because the original create
+request might still be in flight. It deliberately retains `closing` and its plan
+reservation. Repeated absence requires operator reconciliation; no direct SQL
+override or automatic release is introduced. Real merchant payment/refund tests,
+the complete refund ledger policy, and browser scan acceptance remain pending.

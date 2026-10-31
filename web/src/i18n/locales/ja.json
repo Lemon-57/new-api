@@ -7388,6 +7388,11 @@
     "Alipay CNY per USD": "USD あたり CNY",
     "Alipay settings are managed by a private file": "Alipay 設定は非公開ファイルで管理されています",
     "Alipay settings could not be saved. Check the keys, callback URL and existing orders.": "Alipay 設定を保存できません。キー、通知 URL、既存の注文を確認してください。",
-    "Use the dedicated Alipay settings endpoint": "Alipay 専用の設定インターフェースを使用してください"
+    "Use the dedicated Alipay settings endpoint": "Alipay 専用の設定インターフェースを使用してください",
+    "Cancel payment": "支払いをキャンセル",
+    "Close unpaid order": "未払い注文を閉じる",
+    "Payment closed": "支払い注文は終了しました",
+    "Payment closure is awaiting confirmation. Check again.": "注文の終了は未確認です。もう一度確認してください。",
+    "Close this unpaid order? If payment has already succeeded, it will be credited instead.": "未払い注文を閉じますか？支払い済みの場合は正常に反映されます。"
   }
 }

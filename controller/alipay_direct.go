@@ -40,7 +40,7 @@ func requestAlipayPay(c *gin.Context, subscription bool) {
 		return
 	}
 	client, settings, err := service.GetAlipayDirectClient()
-	if err != nil || !settings.Enabled {
+	if err != nil {
 		common.ApiErrorT(c, "Payment information has not been configured by administrator")
 		return
 	}
@@ -52,6 +52,10 @@ func requestAlipayPay(c *gin.Context, subscription bool) {
 	}
 	resuming := order != nil
 	if order == nil {
+		if !settings.Enabled {
+			common.ApiErrorT(c, "Payment information has not been configured by administrator")
+			return
+		}
 		order = &model.AlipayOrder{UserId: userID, RequestId: req.RequestID, OrderId: "NALI" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 			AppId: settings.AppID, SellerId: settings.SellerID, PlanId: req.PlanID, RequestedAmount: req.Amount}
 		var plan *model.SubscriptionPlan
@@ -102,24 +106,14 @@ func requestAlipayPay(c *gin.Context, subscription bool) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	if resuming && order.Status == common.TopUpStatusPending {
-		payment, err := client.Query(c.Request.Context(), pay.Order{OrderID: order.OrderId, AmountCents: order.AmountCents})
+	if resuming && (order.Status == common.TopUpStatusPending || order.Status == model.AlipayOrderClosing) {
+		order, err = service.ReconcileAlipayOrder(c.Request.Context(), order, c.ClientIP())
 		if err != nil {
 			common.ApiErrorT(c, "Failed to start payment")
 			return
 		}
-		if payment.State == pay.Paid {
-			if _, err := model.CompleteAlipayOrder(*payment, settings.AppID, settings.SellerID, c.ClientIP()); err != nil {
-				common.ApiError(c, err)
-				return
-			}
-			order.Status = common.TopUpStatusSuccess
-		} else if payment.State == pay.Closed {
-			common.ApiErrorT(c, "Invalid parameters")
-			return
-		}
 	}
-	if order.Status == common.TopUpStatusSuccess {
+	if order.Status == common.TopUpStatusSuccess || order.Status == model.AlipayOrderClosed || order.Status == model.AlipayOrderClosing {
 		common.ApiSuccess(c, gin.H{"order_id": order.OrderId, "status": order.Status, "amount_cents": order.AmountCents, "currency": "CNY"})
 		return
 	}
@@ -142,6 +136,17 @@ func requestAlipayPay(c *gin.Context, subscription bool) {
 		// A timeout is not an unpaid/failed order. Keep the order pending so a
 		// later query or signed callback can reconcile the same external number.
 		common.ApiErrorT(c, "Failed to start payment")
+		return
+	}
+	// A concurrent cancellation/payment may have completed while the provider
+	// created checkout. Re-read before exposing any now-obsolete QR or page URL.
+	current, err := model.GetAlipayOrder(order.OrderId)
+	if err != nil {
+		common.ApiErrorT(c, "Failed to start payment")
+		return
+	}
+	if current.Status != common.TopUpStatusPending {
+		common.ApiSuccess(c, gin.H{"order_id": current.OrderId, "status": current.Status, "amount_cents": current.AmountCents, "currency": "CNY"})
 		return
 	}
 	common.ApiSuccess(c, gin.H{"order_id": order.OrderId, "status": order.Status, "amount_cents": order.AmountCents, "currency": "CNY",
@@ -181,18 +186,25 @@ func AlipayNotify(c *gin.Context) {
 		c.String(http.StatusBadRequest, "failure")
 		return
 	}
-	if payment.State != pay.Paid {
+	if payment.State == pay.Pending {
 		c.String(http.StatusOK, "success")
 		return
 	}
 	// Independently query the gateway before granting anything. A delayed or
 	// reordered callback does not prove the current paid/refunded state.
 	confirmed, err := client.Query(c.Request.Context(), expected)
-	if err != nil || confirmed.State != pay.Paid || confirmed.TradeNo != payment.TradeNo {
+	if err != nil || confirmed.TradeNo != payment.TradeNo {
 		c.String(http.StatusServiceUnavailable, "failure")
 		return
 	}
-	_, err = model.CompleteAlipayOrder(*confirmed, settings.AppID, settings.SellerID, c.ClientIP())
+	switch confirmed.State {
+	case pay.Paid:
+		_, err = model.CompleteAlipayOrder(*confirmed, settings.AppID, settings.SellerID, c.ClientIP())
+	case pay.Closed:
+		err = model.CompleteAlipayOrderClose(*confirmed, settings.AppID, settings.SellerID)
+	default:
+		err = errors.New("alipay notification requires reconciliation")
+	}
 	if err != nil {
 		c.String(http.StatusServiceUnavailable, "failure")
 		return
@@ -208,31 +220,37 @@ func QueryAlipayOrder(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	if order.Status != common.TopUpStatusPending {
+	if order.Status != common.TopUpStatusPending && order.Status != model.AlipayOrderClosing {
 		common.ApiSuccess(c, order)
 		return
 	}
-	client, settings, err := service.GetAlipayDirectClient()
-	if err != nil || order.AppId != settings.AppID || order.SellerId != settings.SellerID {
-		common.ApiErrorT(c, "Payment information has not been configured by administrator")
-		return
-	}
-	payment, err := client.Query(c.Request.Context(), pay.Order{OrderID: order.OrderId, AmountCents: order.AmountCents})
+	order, err = service.ReconcileAlipayOrder(c.Request.Context(), order, c.ClientIP())
 	if err != nil {
 		common.ApiErrorT(c, "Failed to start payment")
 		return
 	}
-	if payment.State == pay.Paid {
-		if _, err := model.CompleteAlipayOrder(*payment, settings.AppID, settings.SellerID, c.ClientIP()); err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		order, err = model.GetAlipayOrder(order.OrderId)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
+	common.ApiSuccess(c, order)
+}
+
+// CancelAlipayOrder changes only an owned unpaid order. The closing marker is
+// durable before the external request and remains visible on uncertain results.
+func CancelAlipayOrder(c *gin.Context) {
+	order, err := model.GetAlipayOrder(c.Param("order_id"))
+	if err != nil || order.UserId != c.GetInt("id") {
+		c.Status(http.StatusNotFound)
+		return
 	}
+	order, err = model.BeginAlipayOrderClose(order.OrderId, c.GetInt("id"))
+	if err != nil {
+		common.ApiErrorT(c, "Payment status could not be verified.")
+		return
+	}
+	resolved, err := service.ReconcileAlipayOrder(c.Request.Context(), order, c.ClientIP())
+	if err == nil {
+		order = resolved
+	}
+	// status=closing means cancellation was requested but not confirmed. It is
+	// deliberately distinct from both a closed order and a refunded payment.
 	common.ApiSuccess(c, order)
 }
 

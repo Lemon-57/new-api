@@ -15,6 +15,11 @@ import (
 
 const PaymentProviderAlipay = "alipay_direct"
 
+const (
+	AlipayOrderClosing = "closing"
+	AlipayOrderClosed  = "closed"
+)
+
 var alipayRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // AlipayOrder stores the facts agreed before contacting Alipay. In particular,
@@ -99,7 +104,7 @@ func CreateAlipayOrder(order *AlipayOrder, plan *SubscriptionPlan, walletReceipt
 			if err := tx.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", order.UserId, plan.Id).Count(&purchased).Error; err != nil {
 				return err
 			}
-			if err := tx.Model(&AlipayOrder{}).Where("user_id = ? AND plan_id = ? AND status = ?", order.UserId, plan.Id, common.TopUpStatusPending).Count(&reserved).Error; err != nil {
+			if err := tx.Model(&AlipayOrder{}).Where("user_id = ? AND plan_id = ? AND status IN ?", order.UserId, plan.Id, []string{common.TopUpStatusPending, AlipayOrderClosing}).Count(&reserved).Error; err != nil {
 				return err
 			}
 			if purchased+reserved >= int64(plan.MaxPurchasePerUser) {
@@ -169,7 +174,7 @@ func CompleteAlipayOrder(payment pay.Payment, appID, sellerID, callerIP string) 
 			alreadyDone = true
 			return nil
 		}
-		if order.Status != common.TopUpStatusPending {
+		if order.Status != common.TopUpStatusPending && order.Status != AlipayOrderClosing {
 			return ErrTopUpStatusInvalid
 		}
 		// Persisting this unique binding rolls back together with all credit.
@@ -243,4 +248,64 @@ func CompleteAlipayOrder(payment pay.Payment, appID, sellerID, callerIP string) 
 	}
 	RecordTopupLog(order.UserId, message, callerIP, "alipay", PaymentProviderAlipay)
 	return false, nil
+}
+
+// BeginAlipayOrderClose persists the customer's cancellation intent before any
+// provider request. An uncertain network result stays closing; it cannot issue
+// another checkout or release a reserved plan purchase prematurely.
+func BeginAlipayOrderClose(orderID string, userID int) (*AlipayOrder, error) {
+	var order AlipayOrder
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockForUpdate(tx).Where("order_id = ? AND user_id = ?", orderID, userID).First(&order).Error; err != nil {
+			return err
+		}
+		switch order.Status {
+		case common.TopUpStatusSuccess, AlipayOrderClosed, AlipayOrderClosing:
+			return nil
+		case common.TopUpStatusPending:
+			order.Status = AlipayOrderClosing
+			return tx.Model(&order).Update("status", AlipayOrderClosing).Error
+		default:
+			return ErrTopUpStatusInvalid
+		}
+	})
+	return &order, err
+}
+
+// CompleteAlipayOrderClose requires a verified closed gateway result. It expires
+// the native unpaid receipt in the same transaction. A successful payment is
+// never undone here: refund accounting is a different operation.
+func CompleteAlipayOrderClose(payment pay.Payment, appID, sellerID string) error {
+	if payment.State != pay.Closed || payment.OrderID == "" || len(payment.TradeNo) > 64 {
+		return errors.New("alipay closure is not confirmed")
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var order AlipayOrder
+		if err := lockForUpdate(tx).Where("order_id = ?", payment.OrderID).First(&order).Error; err != nil {
+			return err
+		}
+		if order.AppId != appID || order.SellerId != sellerID || order.AmountCents != payment.AmountCents || (order.TradeNo != nil && *order.TradeNo != payment.TradeNo) {
+			return errors.New("alipay closure does not match the stored order")
+		}
+		if order.Status == AlipayOrderClosed {
+			return nil
+		}
+		if order.Status != common.TopUpStatusPending && order.Status != AlipayOrderClosing {
+			return ErrTopUpStatusInvalid
+		}
+		updates := map[string]any{"status": common.TopUpStatusExpired, "complete_time": common.GetTimestamp()}
+		var result *gorm.DB
+		if order.PlanId == 0 {
+			result = tx.Model(&TopUp{}).Where("trade_no = ? AND user_id = ? AND payment_provider = ? AND status = ?", order.OrderId, order.UserId, PaymentProviderAlipay, common.TopUpStatusPending).Updates(updates)
+		} else {
+			result = tx.Model(&SubscriptionOrder{}).Where("trade_no = ? AND user_id = ? AND payment_provider = ? AND status = ?", order.OrderId, order.UserId, PaymentProviderAlipay, common.TopUpStatusPending).Updates(updates)
+		}
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("alipay native unpaid order mismatch")
+		}
+		return tx.Model(&order).Updates(map[string]any{"status": AlipayOrderClosed, "completed_at": common.GetTimestamp()}).Error
+	})
 }
