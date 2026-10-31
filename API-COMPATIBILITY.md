@@ -5,6 +5,8 @@
 用户于 2026-10-31 明确收窄要求：只考虑 Dig Sub2API 接入的 RS、Chat2API，
 只需 API 正常使用、按配置价格正常扣费。Cline 和其他上游不在当前范围。
 不要求复刻 Sub2API 的套餐、后台和支付流程；异步图片任务路径差异也已明确接受。
+后续已接入 https://newapi.killai.cc，API 地址为 https://newapi.killai.cc/v1。
+公网 HTTPS、SSE、WSS 与扣费检查见 [LAC-03 验收记录](LAC03-ACCEPTANCE.md)。
 此前 `GATEWAY-COMPATIBILITY.md` 中的套餐额度等价问题不作为本范围的否决条件。
 
 **标准 Chat / Responses 调用及钱包扣费具备替换可行性。后续已在 LAC-03

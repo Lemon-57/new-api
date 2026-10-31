@@ -7,8 +7,8 @@ or migrate existing balances and databases.
 
 The application supports `BIND_ADDRESS`, defaulting to its existing wildcard
 listen address. Set `BIND_ADDRESS=127.0.0.1` for the acceptance service. Access it
-through an authenticated SSH local forward. No public reverse-proxy or DNS
-change is required. Build the executable locally and verify the SHA-256 both
+through an authenticated SSH local forward for initial isolation. The later
+user-authorized public domain is documented below. Build locally and verify SHA-256 both
 before transfer and on the destination.
 
 Use a separate service, state directory, SQLite database, administrator,
@@ -117,3 +117,50 @@ LAC-02 可用物理内存约 3.04 GiB，未配置 Swap。
 
 原始 `real-api-result.json`、`final-audit.json`、前后资源见证和真实图片保留于
 工作站私有验收目录，不随公开源码提交。后续文档提交不改变上述实际运行二进制。
+
+## 公网域名入口（后续更新）
+
+已按用户指定接入 **https://newapi.killai.cc**；API Base URL 为
+**https://newapi.killai.cc/v1**，登录页为 **https://newapi.killai.cc/sign-in**。
+账号、密码、API Key、数据库和模型映射沿用原验收实例。
+
+- 仅新增该名称的 DNS-only A 记录，指向 LAC-03 104.250.109.133，TTL 60。
+  Cloudflare 和 Google 公共 DNS 均返回正确地址；没有添加 AAAA 或修改其他业务记录。
+- 工作站验证了公开受信证书链、域名 SAN 及 TLS 1.3。签发者为 Let's Encrypt，
+  初次证书到期时间为 2027-01-29 14:48:09 UTC。证书由 Caddy 自动管理；
+  HTTP 返回 308 并跳转 HTTPS。
+- 应用继续只监听回环端口。共享入口只新增域名路由和证书策略，原路由、设置、
+  TLS 策略逐项比对保持；更新使用 ETag / If-Match，原网关进程没有重启。
+  持久配置在原文件完整内容后追加该站点。
+- 应用配置前连续三次未见活动 Upgrade/WebSocket 处理栈，既有 HTTP/SSE 按
+  网关机制继续处理。新域名沿用 24 小时 stream_close_delay：
+  它延迟配置卸载时对 WebSocket 的关闭，不代表无限保留，也不设连接总时长限制。
+- ServerAddress 已设置为该 HTTPS 域名，SESSION_COOKIE_SECURE=true，
+  SESSION_COOKIE_TRUSTED_URL 仅包含 https://newapi.killai.cc。
+  五次连接检查确认验收实例空闲后，只重载该实例应用安全设置，余额与账本保持。
+  原 Sub2API、RS、Chat2API 和共享网关没有重启。
+
+| 公网检查 | 结果 |
+|---|---|
+| HTTPS 登录、正常来源刷新、测试会话退出 | HTTP 200 |
+| 认证刷新 Cookie | Secure、HttpOnly、SameSite=Strict |
+| 非可信 Origin 刷新 | HTTP 403 |
+| 原 API Key 查询模型 | HTTP 200，共 13 个配置模型 |
+| HTTPS JSON、HTTPS SSE | 正常答案，每次一条消费流水 |
+| 同连接两轮 WSS | 两轮完成，响应 ID 不同，每轮一条消费流水 |
+| 无效 Key | HTTP 401，未扣费 |
+| 原 api / apilax 域名健康检查 | HTTP 200，status=ok |
+
+四次新增推理各扣 2,400 单位，合计 0.000096 USD（既有测试价）。
+累计 14 条消费流水、2,045,400 单位，余额剩 97,954,600，Key 剩 2,954,600；
+余额、Key、实际 usage 计算和流水逐笔及累计一致。未重复生成图片，
+不把本次域名检查概括为全部模型或长期负载验证。
+
+工作站解析曾间歇失败。测试保留原主机名和完整证书校验，仅在该域名解析失败时
+在进程内使用已核实的目标 IP；未修改 hosts、系统 DNS 或关闭证书校验。
+公共解析另经两个外部 DNS 服务核实。
+
+热加载和流式窗口参照 [Caddy API](https://caddyserver.com/docs/api)、
+[reverse_proxy](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy) 文档；
+记录操作参照 [Cloudflare DNS API](https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/)。
+完整网关配置、DNS 凭据、证书私钥、会话 Cookie 和登录记录不随源码上传。
