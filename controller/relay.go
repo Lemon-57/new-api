@@ -151,6 +151,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	if newAPIError = relay.CheckRequestModeration(c, relayInfo); newAPIError != nil {
+		return
+	}
+
 	generalSettings := operation_setting.GetGeneralSetting()
 	if relayFormat == types.RelayFormatClaude && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
 		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)

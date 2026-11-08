@@ -5,6 +5,18 @@ import type { TFunction } from 'i18next'
 // sources reported by the channel operations summary.
 export function policyLabel(t: TFunction, value: string): string {
   switch (value) {
+    case 'moderation':
+      return t('AI content moderation')
+    case 'moderation_pass':
+      return t('Content moderation passed')
+    case 'moderation_block':
+      return t('Content moderation blocked the request')
+    case 'moderation_observe_block':
+      return t('Moderation flagged content in observe mode')
+    case 'moderation_fail_open':
+      return t('Moderation unavailable; request allowed by policy')
+    case 'moderation_unavailable':
+      return t('Moderation unavailable; request stopped')
     case 'upstream_failure':
       return t('Upstream request failed')
     case 'request_failed':

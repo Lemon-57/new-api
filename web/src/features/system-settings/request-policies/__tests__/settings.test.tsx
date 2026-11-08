@@ -43,6 +43,7 @@ import { Route as PolicyIndexRoute } from '@/routes/_authenticated/system-settin
 import { Route as SecurityRoute } from '@/routes/_authenticated/system-settings/security/$section'
 
 import { RequestPolicies } from '..'
+import { PolicyDecisionRecord } from '../decision-record'
 import {
   defaultRequestPolicySettings,
   type RequestPolicySettings,
@@ -190,7 +191,7 @@ describe('request policy settings', () => {
   it.each([
     ['retry', 'Save Changes'],
     ['health', 'Save Changes'],
-    ['filtering', 'Save sensitive words'],
+    ['filtering', 'Save request checks'],
     ['affinity', 'Save Changes'],
   ])(
     'opening %s and saving unchanged values does not write options',
@@ -243,7 +244,7 @@ describe('request policy settings', () => {
       screen.getByRole('textbox', { name: 'Blocked keywords' })
     ).toHaveValue('blocked')
     await userEvent.click(
-      screen.getByRole('button', { name: 'Save sensitive words' })
+      screen.getByRole('button', { name: 'Save request checks' })
     )
     await waitFor(() =>
       expect(api.patch).toHaveBeenCalledExactlyOnceWith(
@@ -251,6 +252,28 @@ describe('request policy settings', () => {
         { options: { CheckSensitiveEnabled: 'false' } }
       )
     )
+  })
+
+  it('appends multiple keys with an explicit mode and clears the credential field after saving', async () => {
+    await renderPolicies('/system-settings/request-policies/filtering')
+    const field = await screen.findByLabelText('Jev API keys')
+    fireEvent.change(field, { target: { value: 'synthetic-one\nsynthetic-two' } })
+    await userEvent.click(screen.getByRole('button', { name: 'Save request checks' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/api/option/request_policy', { options: {
+      ContentModerationAPIKey: 'synthetic-one\nsynthetic-two', ContentModerationKeyUpdateMode: 'append',
+    } }))
+    await waitFor(() => expect(field).toHaveValue(''))
+  })
+
+  it('saves moderation timeout without sending a blank stored key or key status', async () => {
+    settings.ContentModerationKeyConfigured = true
+    await renderPolicies('/system-settings/request-policies/filtering')
+    expect(await screen.findByLabelText('Jev API keys')).toHaveValue('')
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Moderation timeout (ms)' }), { target: { value: '4500' } })
+    await userEvent.click(screen.getByRole('button', { name: 'Save request checks' }))
+    await waitFor(() => expect(api.patch).toHaveBeenCalledExactlyOnceWith(
+      '/api/option/request_policy', { options: { ContentModerationTimeoutMS: '4500' } }
+    ))
   })
 
   it('refreshing another policy keeps unsaved filter text', async () => {
@@ -365,4 +388,17 @@ describe('request policy settings', () => {
     )
     expect(api.put).not.toHaveBeenCalled()
   })
+})
+
+it('shows historical moderation scores and thresholds in the decision record', () => {
+ render(<PolicyDecisionRecord events={[{
+  attempt: 0, elapsed_ms: 350,
+  decision: { action: 'stop', reason: 'moderation_block', source: 'moderation' },
+  health: 'unchanged',
+  moderation: { decision: 'block', engine: 'typesafe', model: 'bocha-jev-v1', latency_ms: 350, scores: { violence: 0.950123 }, thresholds: { violence: 0.95 } },
+ }]} />)
+ expect(screen.getByText('Content moderation blocked the request')).toBeInTheDocument()
+ expect(screen.getByText('violence')).toBeInTheDocument()
+ expect(screen.getByText(/0.950123/)).toBeInTheDocument()
+ expect(screen.getByText(/Threshold.*0.95/)).toBeInTheDocument()
 })

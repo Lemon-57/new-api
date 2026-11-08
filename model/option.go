@@ -178,6 +178,19 @@ func InitOptionMap() {
 	common.OptionMap["MjForwardUrlEnabled"] = strconv.FormatBool(setting.MjForwardUrlEnabled)
 	common.OptionMap["MjActionCheckSuccessEnabled"] = strconv.FormatBool(setting.MjActionCheckSuccessEnabled)
 	common.OptionMap["CheckSensitiveEnabled"] = strconv.FormatBool(setting.CheckSensitiveEnabled)
+	common.OptionMap[setting.ContentModerationEnabledKey] = strconv.FormatBool(setting.ContentModerationEnabled)
+	common.OptionMap[setting.ContentModerationEngineKey] = setting.ContentModerationEngine
+	common.OptionMap[setting.ContentModerationModeKey] = setting.ContentModerationMode
+	common.OptionMap[setting.ContentModerationBaseURLKey] = setting.ContentModerationBaseURL
+	common.OptionMap[setting.ContentModerationModelKey] = setting.ContentModerationModel
+	common.OptionMap[setting.ContentModerationAPIKeyKey] = ""
+	common.OptionMap[setting.ContentModerationKeyConfiguredKey] = strconv.FormatBool(setting.ContentModerationAPIKey != "")
+	common.OptionMap[setting.ContentModerationTimeoutMSKey] = strconv.Itoa(setting.ContentModerationTimeoutMS)
+	common.OptionMap[setting.ContentModerationRetryCountKey] = strconv.Itoa(setting.ContentModerationRetryCount)
+	common.OptionMap[setting.ContentModerationSampleRateKey] = strconv.Itoa(setting.ContentModerationSampleRate)
+	common.OptionMap[setting.ContentModerationFailOpenKey] = strconv.FormatBool(setting.ContentModerationFailOpen)
+	thresholds, _ := common.Marshal(setting.ContentModerationThresholds)
+	common.OptionMap[setting.ContentModerationThresholdsKey] = string(thresholds)
 	common.OptionMap["DemoSiteEnabled"] = strconv.FormatBool(operation_setting.DemoSiteEnabled)
 	common.OptionMap["SelfUseModeEnabled"] = strconv.FormatBool(operation_setting.SelfUseModeEnabled)
 	common.OptionMap["ModelRequestRateLimitEnabled"] = strconv.FormatBool(setting.ModelRequestRateLimitEnabled)
@@ -209,6 +222,8 @@ func loadOptionsFromDatabase() {
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
 	options, _ := AllOption()
+	unlockModeration := setting.LockContentModerationUpdates()
+	defer unlockModeration()
 	passkeyOptions := make(map[string]string)
 	for _, option := range options {
 		if IsPasskeyDomainOption(option.Key) {
@@ -232,6 +247,9 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if err := setting.ValidateContentModerationOption(key, value); err != nil {
+		return err
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}
@@ -309,6 +327,9 @@ func UpdateOption(key string, value string) error {
 // is touched — safe for callers that must commit a set of related options
 // atomically (e.g. payment gateway binding).
 func UpdateOptionsBulk(values map[string]string) error {
+	if _, hasModerationKey := values[setting.ContentModerationAPIKeyKey]; hasModerationKey {
+		return UpdateRequestPolicyOptions(values)
+	}
 	if len(values) == 0 {
 		return nil
 	}
@@ -343,6 +364,8 @@ func UpdateOptionsBulk(values map[string]string) error {
 		}
 	}
 
+	unlockModeration := setting.LockContentModerationUpdates()
+	defer unlockModeration()
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
 			option := Option{Key: k}
@@ -371,6 +394,21 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if key == setting.ContentModerationAPIKeyKey {
+		plain, decryptErr := setting.DecryptContentModerationKey(value)
+		// On a corrupted secret, clear any stale runtime key and fail closed.
+		if decryptErr != nil {
+			plain = ""
+		}
+		if err := setting.SetContentModerationOption(key, plain); err != nil {
+			return err
+		}
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap[key] = value
+		common.OptionMap[setting.ContentModerationKeyConfiguredKey] = strconv.FormatBool(plain != "")
+		common.OptionMapRWMutex.Unlock()
+		return decryptErr
+	}
 	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)
@@ -468,6 +506,10 @@ func updateOptionMap(key string, value string) (err error) {
 			setting.MjActionCheckSuccessEnabled = boolValue
 		case "CheckSensitiveEnabled":
 			setting.CheckSensitiveEnabled = boolValue
+		case setting.ContentModerationEnabledKey, setting.ContentModerationFailOpenKey:
+			if err = setting.SetContentModerationOption(key, value); err != nil {
+				return err
+			}
 		case "DemoSiteEnabled":
 			operation_setting.DemoSiteEnabled = boolValue
 		case "SelfUseModeEnabled":
@@ -693,6 +735,21 @@ func updateOptionMap(key string, value string) (err error) {
 		common.QuotaPerUnit, _ = strconv.ParseFloat(value, 64)
 	case "SensitiveWords":
 		setting.SensitiveWordsFromString(value)
+	case setting.ContentModerationFailOpenKey:
+		err = setting.SetContentModerationOption(key, value)
+	case setting.ContentModerationEngineKey,
+		setting.ContentModerationModeKey,
+		setting.ContentModerationBaseURLKey,
+		setting.ContentModerationModelKey,
+		setting.ContentModerationAPIKeyKey,
+		setting.ContentModerationTimeoutMSKey,
+		setting.ContentModerationRetryCountKey,
+		setting.ContentModerationSampleRateKey,
+		setting.ContentModerationThresholdsKey:
+		err = setting.SetContentModerationOption(key, value)
+		if key == setting.ContentModerationAPIKeyKey {
+			common.OptionMap[setting.ContentModerationKeyConfiguredKey] = strconv.FormatBool(value != "")
+		}
 	case "AutomaticDisableKeywords":
 		operation_setting.AutomaticDisableKeywordsFromString(value)
 	case "AutomaticDisableStatusCodes":

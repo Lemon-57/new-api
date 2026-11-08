@@ -1,4 +1,6 @@
 import { useTranslation } from 'react-i18next'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber } from '@/lib/format'
 
 import type { PolicyEvent } from './api'
 import { policyLabel } from './policy-label'
@@ -7,7 +9,11 @@ export function PolicyDecisionRecord(props: {
   events: PolicyEvent[] | null
   channelNames?: Record<number, string>
 }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  // Moderation scores need more than the ordinary two-decimal display precision
+  // so administrators can compare scores close to a configured threshold.
+  const scoreFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 6 })
   return (
     <ol aria-label={t('Request decision flow')} className='space-y-0 text-sm'>
       {(props.events ?? []).map((event, index) => (
@@ -47,6 +53,24 @@ export function PolicyDecisionRecord(props: {
             {t('Source')}: {policyLabel(t, event.decision.source)}
             {event.health ? ` · ${policyLabel(t, event.health)}` : ''}
           </p>
+          {event.moderation && (
+            <div className='mt-2 space-y-1'>
+              <p>{event.moderation.engine} · {event.moderation.model} · {formatNumber(event.moderation.latency_ms, locale)} ms</p>
+              <dl aria-label={t('Moderation scores and thresholds')} className='grid grid-cols-1 gap-1 text-xs sm:grid-cols-2'>
+                {Object.entries(event.moderation.scores ?? {}).map(([category, score]) => (
+                  <div key={category} className='flex flex-wrap gap-2'>
+                    <dt>{category}</dt>
+                    <dd>
+                      {scoreFormat.format(score)}
+                      {event.moderation?.thresholds?.[category] !== undefined && (
+                        <> · {t('Threshold')}: {scoreFormat.format(event.moderation.thresholds[category])}</>
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
         </li>
       ))}
     </ol>

@@ -41,13 +41,8 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 		}
 	}
 
-	if needSensitiveCheck && meta != nil {
-		if contains, words := service.CheckSensitiveText(meta.CombineText); contains {
-			service.RequestPolicy(c).AddEvent(service.PolicyEvent{ErrorCode: string(types.ErrorCodeSensitiveWordsDetected), ErrorSource: "local", Decision: service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "global"}, Health: "unchanged"})
-			message := fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", "))
-			logger.LogWarn(c, message)
-			return types.NewError(errors.New(message), types.ErrorCodeSensitiveWordsDetected)
-		}
+	if err := CheckRequestModeration(c, info); err != nil {
+		return err
 	}
 
 	tokens, err := service.EstimateRequestToken(c, meta, info)
@@ -79,4 +74,73 @@ func RefundFailedRequestBilling(c *gin.Context, info *relaycommon.RelayInfo, api
 	}
 	service.ChargeViolationFeeIfNeeded(c, info, apiErr)
 	return apiErr
+}
+
+// CheckRequestModeration runs before committing SSE headers and before quota
+// reservation. The per-request context also prevents duplicate paid checks.
+func CheckRequestModeration(c *gin.Context, info *relaycommon.RelayInfo) (result *types.NewAPIError) {
+	const cacheKey = "request_content_moderation_result"
+	if cached, exists := c.Get(cacheKey); exists {
+		if cached == nil {
+			return nil
+		}
+		return cached.(*types.NewAPIError)
+	}
+	defer func() { c.Set(cacheKey, result) }()
+	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
+	var meta *types.TokenCountMeta
+	if needSensitiveCheck && info.Request != nil {
+		meta = info.Request.GetTokenCountMeta()
+	}
+	if needSensitiveCheck && meta != nil {
+		if contains, words := service.CheckSensitiveText(meta.CombineText); contains {
+			service.RequestPolicy(c).AddEvent(service.PolicyEvent{ErrorCode: string(types.ErrorCodeSensitiveWordsDetected), ErrorSource: "local", Decision: service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "global"}, Health: "unchanged"})
+			message := fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", "))
+			logger.LogWarn(c, message)
+			return types.NewError(errors.New(message), types.ErrorCodeSensitiveWordsDetected)
+		}
+	}
+
+	moderation, moderationErr := service.CheckContentModeration(c.Request.Context(), info.Request)
+	if moderation != nil || moderationErr != nil {
+		action, reason := "allow", "moderation_pass"
+		if moderation != nil {
+			reason = "moderation_" + moderation.Decision
+		}
+		if moderationErr != nil {
+			action, reason = "stop", "moderation_unavailable"
+		}
+		if errors.Is(moderationErr, service.ErrContentModerationBlocked) {
+			reason = "moderation_block"
+		}
+		service.RequestPolicy(c).AddEvent(service.PolicyEvent{ErrorSource: "local", Decision: service.PolicyDecision{Action: action, Reason: reason, Source: "moderation"}, Health: "unchanged", Moderation: moderation})
+	}
+	if moderationErr != nil {
+		service.RecordModerationRejection(c, moderation, moderationErr)
+		switch {
+		case errors.Is(moderationErr, service.ErrContentModerationBlocked):
+			return types.NewErrorWithStatusCode(
+				service.ErrContentModerationBlocked,
+				types.ErrorCodeContentModerationBlocked,
+				http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(),
+			)
+		case errors.Is(moderationErr, service.ErrContentModerationUnavailable):
+			return types.NewErrorWithStatusCode(
+				service.ErrContentModerationUnavailable,
+				types.ErrorCodeContentModerationUnavailable,
+				http.StatusServiceUnavailable,
+				types.ErrOptionWithSkipRetry(),
+			)
+		default:
+			return types.NewErrorWithStatusCode(
+				moderationErr,
+				types.ErrorCodeContentModerationUnavailable,
+				http.StatusServiceUnavailable,
+				types.ErrOptionWithSkipRetry(),
+			)
+		}
+	}
+
+	return nil
 }

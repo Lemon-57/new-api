@@ -6,9 +6,11 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -74,6 +76,48 @@ func TestRequestPolicyDatabaseMatrix(t *testing.T) {
 			}
 			require.NoError(t, db.Raw(query).Scan(&version).Error)
 			t.Logf("database version: %s", version)
+			t.Setenv("CRYPTO_SECRET", strings.Repeat("test-deployment-secret", 3))
+			oldKey := setting.GetContentModerationConfig().APIKey
+			t.Cleanup(func() {
+				require.NoError(t, setting.SetContentModerationOption(setting.ContentModerationAPIKeyKey, oldKey))
+			})
+			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationAPIKeyKey: "synthetic-jev-key"}))
+			var credential Option
+			require.NoError(t, db.Where(map[string]any{"key": setting.ContentModerationAPIKeyKey}).First(&credential).Error)
+			assert.NotContains(t, credential.Value, "synthetic-jev-key")
+			assert.NotContains(t, CurrentRequestPolicy().Options, setting.ContentModerationAPIKeyKey)
+			require.NoError(t, setting.SetContentModerationOption(setting.ContentModerationAPIKeyKey, ""))
+			loadOptionsFromDatabase()
+			loadOptionsFromDatabase()
+			assert.Equal(t, "synthetic-jev-key", setting.GetContentModerationConfig().APIKey)
+			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationAPIKeyKey: ""}))
+			assert.Equal(t, "synthetic-jev-key", setting.GetContentModerationConfig().APIKey)
+			assert.Error(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationAPIKeyKey: "replacement", setting.ContentModerationThresholdsKey: `{"unknown":0.5}`}))
+			loadOptionsFromDatabase()
+			assert.Equal(t, "synthetic-jev-key", setting.GetContentModerationConfig().APIKey)
+			t.Setenv("CRYPTO_SECRET", strings.Repeat("wrong-secret", 4))
+			assert.Error(t, updateOptionMap(setting.ContentModerationAPIKeyKey, credential.Value))
+			assert.Empty(t, setting.GetContentModerationConfig().APIKey)
+			t.Setenv("CRYPTO_SECRET", strings.Repeat("test-deployment-secret", 3))
+			loadOptionsFromDatabase()
+			assert.Equal(t, "synthetic-jev-key", setting.GetContentModerationConfig().APIKey)
+			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationAPIKeyKey: "synthetic-jev-second\nsynthetic-jev-key", setting.ContentModerationKeyUpdateModeKey: "append"}))
+			require.Equal(t, []string{"synthetic-jev-key", "synthetic-jev-second"}, setting.GetContentModerationConfig().APIKeys())
+			loadOptionsFromDatabase()
+			require.Len(t, setting.GetContentModerationConfig().APIKeys(), 2)
+			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationAPIKeyKey: ""}))
+			require.Len(t, setting.GetContentModerationConfig().APIKeys(), 2)
+			require.Error(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationDeleteKeyKey: "nonexistent"}))
+			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationDeleteKeyKey: setting.ContentModerationKeyHash("synthetic-jev-key")}))
+			require.Equal(t, []string{"synthetic-jev-second"}, setting.GetContentModerationConfig().APIKeys())
+			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationDeleteKeyKey: setting.ContentModerationKeyHash("synthetic-jev-second")}))
+			loadOptionsFromDatabase()
+			require.Empty(t, setting.GetContentModerationConfig().APIKeys())
+			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{setting.ContentModerationAPIKeyKey: "synthetic-replacement", setting.ContentModerationKeyUpdateModeKey: "replace"}))
+			require.Equal(t, []string{"synthetic-replacement"}, setting.GetContentModerationConfig().APIKeys())
+			require.NotContains(t, CurrentRequestPolicy().Options, setting.ContentModerationKeyUpdateModeKey)
+			require.NoError(t, db.Where(map[string]any{"key": setting.ContentModerationAPIKeyKey}).First(&credential).Error)
+			require.NotContains(t, credential.Value, "synthetic-replacement")
 			rules := `[{"name":"session","model_regex":[".*"],"key_sources":[{"type":"request_header","key":"X-Session"}],"ttl_seconds":0,"skip_retry_on_failure":false,"include_using_group":false,"param_override_template":{"temperature":0},"future_field":{"enabled":false}}]`
 			require.NoError(t, UpdateRequestPolicyOptions(map[string]string{"RetryTimes": "2", "channel_affinity_setting.rules": rules}))
 			assert.Equal(t, 2, CurrentRequestPolicy().RetryTimes)

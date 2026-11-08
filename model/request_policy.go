@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -59,6 +60,18 @@ func requestPolicyDefaultOptions() map[string]string {
 	defaults["CheckSensitiveEnabled"] = strconv.FormatBool(setting.CheckSensitiveEnabled)
 	defaults["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(setting.CheckSensitiveOnPromptEnabled)
 	defaults["SensitiveWords"] = setting.SensitiveWordsToString()
+	defaults[setting.ContentModerationEnabledKey] = strconv.FormatBool(setting.ContentModerationEnabled)
+	defaults[setting.ContentModerationEngineKey] = setting.ContentModerationEngine
+	defaults[setting.ContentModerationModeKey] = setting.ContentModerationMode
+	defaults[setting.ContentModerationBaseURLKey] = setting.ContentModerationBaseURL
+	defaults[setting.ContentModerationModelKey] = setting.ContentModerationModel
+	defaults[setting.ContentModerationKeyConfiguredKey] = strconv.FormatBool(setting.ContentModerationAPIKey != "")
+	defaults[setting.ContentModerationTimeoutMSKey] = strconv.Itoa(setting.ContentModerationTimeoutMS)
+	defaults[setting.ContentModerationRetryCountKey] = strconv.Itoa(setting.ContentModerationRetryCount)
+	defaults[setting.ContentModerationSampleRateKey] = strconv.Itoa(setting.ContentModerationSampleRate)
+	defaults[setting.ContentModerationFailOpenKey] = strconv.FormatBool(setting.ContentModerationFailOpen)
+	thresholds, _ := common.Marshal(setting.ContentModerationThresholds)
+	defaults[setting.ContentModerationThresholdsKey] = string(thresholds)
 	defaults["AutomaticEnableChannelEnabled"] = strconv.FormatBool(common.AutomaticEnableChannelEnabled)
 	defaults["ChannelDisableThreshold"] = strconv.FormatFloat(common.ChannelDisableThreshold, 'f', -1, 64)
 	return defaults
@@ -69,7 +82,7 @@ func IsRequestPolicyOption(key string) bool {
 		return true
 	}
 	switch key {
-	case "CheckSensitiveEnabled", "CheckSensitiveOnPromptEnabled", "SensitiveWords", "AutomaticEnableChannelEnabled", "ChannelDisableThreshold", "monitor_setting.auto_test_channel_enabled", "monitor_setting.auto_test_channel_minutes", "monitor_setting.channel_test_concurrency", "monitor_setting.channel_test_mode", "RetryTimes", "AutomaticRetryStatusCodes", "AutomaticDisableChannelEnabled", "AutomaticDisableStatusCodes", "AutomaticDisableKeywords":
+	case "CheckSensitiveEnabled", "CheckSensitiveOnPromptEnabled", "SensitiveWords", "AutomaticEnableChannelEnabled", "ChannelDisableThreshold", "monitor_setting.auto_test_channel_enabled", "monitor_setting.auto_test_channel_minutes", "monitor_setting.channel_test_concurrency", "monitor_setting.channel_test_mode", "RetryTimes", "AutomaticRetryStatusCodes", "AutomaticDisableChannelEnabled", "AutomaticDisableStatusCodes", "AutomaticDisableKeywords", setting.ContentModerationEnabledKey, setting.ContentModerationEngineKey, setting.ContentModerationModeKey, setting.ContentModerationBaseURLKey, setting.ContentModerationModelKey, setting.ContentModerationAPIKeyKey, setting.ContentModerationTimeoutMSKey, setting.ContentModerationRetryCountKey, setting.ContentModerationSampleRateKey, setting.ContentModerationFailOpenKey, setting.ContentModerationThresholdsKey:
 		return true
 	}
 	return false
@@ -88,6 +101,11 @@ func CurrentRequestPolicy() *RequestPolicySnapshot {
 }
 
 func BuildRequestPolicy(options map[string]string) (*RequestPolicySnapshot, error) {
+	for key, value := range options {
+		if err := setting.ValidateContentModerationOption(key, value); err != nil {
+			return nil, err
+		}
+	}
 	defaults := requestPolicyDefaults
 
 	raw := make(map[string]string)
@@ -98,6 +116,8 @@ func BuildRequestPolicy(options map[string]string) (*RequestPolicySnapshot, erro
 	}
 	maps.Copy(raw, options)
 	snapshot := &RequestPolicySnapshot{Options: raw}
+	// Credential material is never part of a policy snapshot or its API view.
+	delete(raw, setting.ContentModerationAPIKeyKey)
 	affinityFields := map[string]string{}
 	for key, value := range raw {
 		if field, ok := strings.CutPrefix(key, "channel_affinity_setting."); ok {
@@ -206,7 +226,7 @@ func refreshRequestPolicySnapshot() error {
 	common.OptionMapRWMutex.RLock()
 	options := make(map[string]string)
 	for key, value := range common.OptionMap {
-		if IsRequestPolicyOption(key) {
+		if IsRequestPolicyOption(key) && key != setting.ContentModerationAPIKeyKey {
 			options[key] = value
 		}
 	}
@@ -223,6 +243,41 @@ func refreshRequestPolicySnapshot() error {
 func UpdateRequestPolicyOptions(values map[string]string) error {
 	requestPolicyOptionMutex.Lock()
 	defer requestPolicyOptionMutex.Unlock()
+	values = maps.Clone(values)
+	mode, modePresent := values[setting.ContentModerationKeyUpdateModeKey]
+	delete(values, setting.ContentModerationKeyUpdateModeKey)
+	deleteHash, deletePresent := values[setting.ContentModerationDeleteKeyKey]
+	delete(values, setting.ContentModerationDeleteKeyKey)
+	if modePresent && mode != "append" && mode != "replace" {
+		return errors.New("invalid moderation key update mode")
+	}
+	if deletePresent && (modePresent || strings.TrimSpace(values[setting.ContentModerationAPIKeyKey]) != "") {
+		return errors.New("cannot combine moderation key deletion and replacement")
+	}
+	if deletePresent || (mode == "append" && strings.TrimSpace(values[setting.ContentModerationAPIKeyKey]) != "") {
+		keys := setting.GetContentModerationConfig().APIKeys()
+		if deletePresent {
+			found := false
+			remaining := make([]string, 0, len(keys))
+			for _, key := range keys {
+				if setting.ContentModerationKeyHash(key) == deleteHash {
+					found = true
+					continue
+				}
+				remaining = append(remaining, key)
+			}
+			if !found {
+				return errors.New("moderation key no longer exists; refresh and retry")
+			}
+			values[setting.ContentModerationAPIKeyKey] = strings.Join(remaining, "\n")
+		} else {
+			keys = append(keys, values[setting.ContentModerationAPIKeyKey])
+			values[setting.ContentModerationAPIKeyKey] = strings.Join(keys, "\n")
+		}
+	}
+	if value, exists := values[setting.ContentModerationAPIKeyKey]; exists && strings.TrimSpace(value) == "" && !deletePresent {
+		delete(values, setting.ContentModerationAPIKeyKey)
+	}
 	options := maps.Clone(CurrentRequestPolicy().Options)
 	for key, value := range values {
 		if !IsRequestPolicyOption(key) {
@@ -234,6 +289,15 @@ func UpdateRequestPolicyOptions(values map[string]string) error {
 	if err != nil {
 		return err
 	}
+	if value, exists := values[setting.ContentModerationAPIKeyKey]; exists {
+		encrypted, err := setting.EncryptContentModerationKey(value)
+		if err != nil {
+			return err
+		}
+		values[setting.ContentModerationAPIKeyKey] = encrypted
+	}
+	unlockModeration := setting.LockContentModerationUpdates()
+	defer unlockModeration()
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		for key, value := range values {
 			option := Option{Key: key}

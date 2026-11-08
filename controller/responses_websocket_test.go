@@ -1428,3 +1428,134 @@ func TestResponsesWebSocketPreRoutingRejectionsFollowHealthClassification(t *tes
 		})
 	}
 }
+
+// Exercise authenticated HTTP relay entry points with real quota records and a
+// counting upstream, rather than calling the moderation client in isolation.
+func TestRelayModerationBlocksWithoutUpstreamOrQuotaChange(t *testing.T) {
+	user, token := setupResponsesWSRequestTest(t)
+	oldErrorLog := constant.ErrorLogEnabled
+	constant.ErrorLogEnabled = true
+	t.Cleanup(func() { constant.ErrorLogEnabled = oldErrorLog })
+	require.NoError(t, model.LOG_DB.AutoMigrate(&model.Log{}))
+	old := setting.GetContentModerationConfig()
+	oldThresholds, err := common.Marshal(old.Thresholds)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for k, v := range map[string]string{
+			setting.ContentModerationEnabledKey:    fmt.Sprint(old.Enabled),
+			setting.ContentModerationBaseURLKey:    old.BaseURL,
+			setting.ContentModerationAPIKeyKey:     old.APIKey,
+			setting.ContentModerationThresholdsKey: string(oldThresholds),
+			setting.ContentModerationModeKey:       old.Mode,
+			setting.ContentModerationSampleRateKey: fmt.Sprint(old.SampleRate),
+		} {
+			require.NoError(t, setting.SetContentModerationOption(k, v))
+		}
+	})
+	var upstreamCalls, moderationCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { upstreamCalls.Add(1); w.WriteHeader(500) }))
+	defer upstream.Close()
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		moderationCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"bocha-jev-v1","answers":{"violence":{"type":"noul","noul":0.99}}}`)
+	}))
+	defer moderation.Close()
+	for k, v := range map[string]string{
+		setting.ContentModerationEnabledKey: "true", setting.ContentModerationBaseURLKey: moderation.URL,
+		setting.ContentModerationAPIKeyKey: "synthetic-key", setting.ContentModerationThresholdsKey: `{"violence":0.95}`,
+		setting.ContentModerationModeKey: "pre_block", setting.ContentModerationSampleRateKey: "100",
+	} {
+		require.NoError(t, setting.SetContentModerationOption(k, v))
+	}
+	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	ch := &model.Channel{Name: "moderation-upstream", Key: "synthetic-upstream-key", Status: common.ChannelStatusEnabled, Type: constant.ChannelTypeOpenAI, Group: "default", Models: "gpt-4o", BaseURL: &upstream.URL}
+	require.NoError(t, model.DB.Create(ch).Error)
+	require.NoError(t, model.DB.Create(&model.Ability{ChannelId: ch.Id, Model: "gpt-4o", Group: "default", Enabled: true}).Error)
+	for _, tc := range []struct {
+		path   string
+		format types.RelayFormat
+		body   string
+	}{
+		{"/v1/chat/completions", types.RelayFormatOpenAI, `{"model":"gpt-4o","messages":[{"role":"user","content":"test text"}]}`},
+		{"/v1/chat/completions", types.RelayFormatOpenAI, `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"test text"}]}`},
+		{"/v1/responses", types.RelayFormatOpenAIResponses, `{"model":"gpt-4o","input":"test text"}`},
+		{"/v1/messages", types.RelayFormatClaude, `{"model":"gpt-4o","max_tokens":16,"messages":[{"role":"user","content":"test text"}]}`},
+		{"/v1/images/generations", types.RelayFormatOpenAIImage, `{"model":"gpt-4o","prompt":"test text","n":1}`},
+	} {
+		t.Run(tc.path+tc.body, func(t *testing.T) {
+			beforeCalls := moderationCalls.Load()
+			router := gin.New()
+			router.POST(tc.path, middleware.TokenAuth(), middleware.Distribute(), func(c *gin.Context) { Relay(c, tc.format) })
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer sk-"+token.Key)
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+			if tc.format == types.RelayFormatClaude {
+				require.Contains(t, response.Body.String(), "request blocked by content moderation")
+			} else {
+				require.Contains(t, response.Body.String(), "content_policy_violation")
+			}
+			require.Equal(t, beforeCalls+1, moderationCalls.Load())
+			require.Zero(t, upstreamCalls.Load())
+			var currentUser model.User
+			var currentToken model.Token
+			require.NoError(t, model.DB.First(&currentUser, user.Id).Error)
+			require.NoError(t, model.DB.First(&currentToken, token.Id).Error)
+			require.Equal(t, user.Quota, currentUser.Quota)
+			require.Equal(t, token.RemainQuota, currentToken.RemainQuota)
+			require.Zero(t, currentUser.UsedQuota)
+			var logs []model.Log
+			require.NoError(t, model.LOG_DB.Where("user_id = ?", user.Id).Find(&logs).Error)
+			require.Len(t, logs, int(moderationCalls.Load()))
+			for _, entry := range logs {
+				require.Equal(t, model.LogTypeError, entry.Type)
+				require.Zero(t, entry.Quota)
+				require.Zero(t, entry.ChannelId)
+				require.Contains(t, entry.Other, "moderation_block")
+				require.NotContains(t, entry.Other, "synthetic-key")
+				require.NotContains(t, entry.Other, "test text")
+			}
+		})
+	}
+}
+
+func TestResponsesWebSocketModerationBlocksBeforeUpstream(t *testing.T) {
+	old := setting.GetContentModerationConfig()
+	thresholds, err := common.Marshal(old.Thresholds)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for k, v := range map[string]string{
+			setting.ContentModerationEnabledKey: fmt.Sprint(old.Enabled), setting.ContentModerationBaseURLKey: old.BaseURL,
+			setting.ContentModerationAPIKeyKey: old.APIKey, setting.ContentModerationThresholdsKey: string(thresholds),
+			setting.ContentModerationModeKey: old.Mode, setting.ContentModerationSampleRateKey: fmt.Sprint(old.SampleRate),
+		} {
+			require.NoError(t, setting.SetContentModerationOption(k, v))
+		}
+	})
+	var calls atomic.Int32
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"bocha-jev-v1","answers":{"violence":{"type":"noul","noul":0.99}}}`)
+	}))
+	defer moderation.Close()
+	for k, v := range map[string]string{
+		setting.ContentModerationEnabledKey: "true", setting.ContentModerationBaseURLKey: moderation.URL,
+		setting.ContentModerationAPIKeyKey: "synthetic-key", setting.ContentModerationThresholdsKey: `{"violence":0.95}`,
+		setting.ContentModerationModeKey: "pre_block", setting.ContentModerationSampleRateKey: "100",
+	} {
+		require.NoError(t, setting.SetContentModerationOption(k, v))
+	}
+	fixture := newResponsesWSBillingTest(t, `tier("base",p * 2)`, func(ws *websocket.Conn, r *http.Request) { t.Error("blocked request connected to upstream") })
+	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"ws-billing","input":"test text"}`)))
+	require.NoError(t, fixture.client.SetReadDeadline(time.Now().Add(3*time.Second)))
+	event := readResponsesWSTestEvent(t, fixture.client)
+	require.Equal(t, "error", event["type"])
+	require.Equal(t, float64(403), event["status"])
+	require.Equal(t, int32(1), calls.Load())
+	require.Zero(t, fixture.connections.Load())
+	assertResponsesWSAccounting(t, fixture, nil)
+}

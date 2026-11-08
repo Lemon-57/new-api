@@ -32,6 +32,18 @@ const POLICY_SECTIONS = [
           CheckSensitiveEnabled: settings.CheckSensitiveEnabled,
           CheckSensitiveOnPromptEnabled: settings.CheckSensitiveOnPromptEnabled,
           SensitiveWords: settings.SensitiveWords,
+          ContentModerationEnabled: settings.ContentModerationEnabled,
+          ContentModerationEngine: settings.ContentModerationEngine,
+          ContentModerationMode: settings.ContentModerationMode,
+          ContentModerationBaseURL: settings.ContentModerationBaseURL,
+          ContentModerationModel: settings.ContentModerationModel,
+          ContentModerationAPIKey: settings.ContentModerationAPIKey,
+          ContentModerationKeyConfigured: settings.ContentModerationKeyConfigured,
+          ContentModerationTimeoutMS: settings.ContentModerationTimeoutMS,
+          ContentModerationRetryCount: settings.ContentModerationRetryCount,
+          ContentModerationSampleRate: settings.ContentModerationSampleRate,
+          ContentModerationFailOpen: settings.ContentModerationFailOpen,
+          ContentModerationThresholds: settings.ContentModerationThresholds,
         }}
       />
     ),

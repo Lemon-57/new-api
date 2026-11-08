@@ -20,6 +20,7 @@ import (
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	kittypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -768,4 +769,49 @@ export function extractUsage() { return {seconds:2}; }
 			assert.Equal(t, tc.expressions["retry-b::declared-model"], info.TieredBillingSnapshot.ExprString)
 		})
 	}
+}
+
+func TestTaskModerationRejectsBeforePluginValidationAndBilling(t *testing.T) {
+	old := setting.GetContentModerationConfig()
+	thresholds, err := common.Marshal(old.Thresholds)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		for k, v := range map[string]string{
+			setting.ContentModerationEnabledKey: strconv.FormatBool(old.Enabled), setting.ContentModerationBaseURLKey: old.BaseURL,
+			setting.ContentModerationAPIKeyKey: old.APIKey, setting.ContentModerationThresholdsKey: string(thresholds),
+			setting.ContentModerationModeKey: old.Mode, setting.ContentModerationSampleRateKey: strconv.Itoa(old.SampleRate),
+		} {
+			require.NoError(t, setting.SetContentModerationOption(k, v))
+		}
+	})
+	calls := 0
+	moderation := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var payload struct {
+			State string `json:"state"`
+		}
+		if common.DecodeJson(r.Body, &payload) != nil || payload.State != "test prompt" {
+			w.WriteHeader(400)
+			return
+		}
+		_, _ = w.Write([]byte(`{"model":"bocha-jev-v1","answers":{"violence":{"type":"noul","noul":0.99}}}`))
+	}))
+	defer moderation.Close()
+	for k, v := range map[string]string{
+		setting.ContentModerationEnabledKey: "true", setting.ContentModerationBaseURLKey: moderation.URL,
+		setting.ContentModerationAPIKeyKey: "synthetic-key", setting.ContentModerationThresholdsKey: `{"violence":0.95}`,
+		setting.ContentModerationModeKey: "pre_block", setting.ContentModerationSampleRateKey: "100",
+	} {
+		require.NoError(t, setting.SetContentModerationOption(k, v))
+	}
+	c, info := newTaskSubmitContext(t, "declared-model", "")
+	c.Set("task_request", map[string]any{"input": map[string]any{"prompt": "test prompt"}, "metadata": map[string]any{"api_key": "must-not-send"}, "image_url": "https://example.com/image"})
+	pinMappingOrderPlugin(t, c, mappingOrderRewritePlugin)
+	result, taskErr := RelayTaskSubmit(c, info)
+	require.Nil(t, result)
+	require.NotNil(t, taskErr)
+	require.Equal(t, http.StatusForbidden, taskErr.StatusCode)
+	require.Empty(t, info.PublicTaskID)
+	require.Nil(t, info.Billing)
+	require.Equal(t, 1, calls)
 }

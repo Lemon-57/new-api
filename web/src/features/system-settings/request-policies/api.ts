@@ -3,9 +3,32 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 export type PolicyConfig = {
   options: Record<string, string>
+  moderation_keys?: ModerationKeyStatus[]
+}
+export type ModerationKeyStatus = {
+  hash: string
+  masked: string
+  frozen_until: string
+  last_checked_at: string
+  last_http_status: number
+  last_latency_ms: number
+  last_error: string
+  calls: number
+  successes: number
+  errors: number
+  active: number
+  latency_ms: number
 }
 export type PolicyDecision = { action: string; reason: string; source: string }
 export type PolicyEvent = {
+  moderation?: {
+    decision: string
+    engine: string
+    model: string
+    latency_ms: number
+    scores?: Record<string, number>
+    thresholds?: Record<string, number>
+  }
   attempt: number
   channel_id?: number
   group?: string

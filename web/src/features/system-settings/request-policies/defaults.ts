@@ -40,7 +40,20 @@ export type HealthSettings = {
 export type FilteringSettings = Pick<
   SecuritySettings,
   'CheckSensitiveEnabled' | 'CheckSensitiveOnPromptEnabled' | 'SensitiveWords'
->
+> & {
+  ContentModerationEnabled: boolean
+  ContentModerationEngine: string
+  ContentModerationMode: string
+  ContentModerationBaseURL: string
+  ContentModerationModel: string
+  ContentModerationAPIKey: string
+  ContentModerationKeyConfigured: boolean
+  ContentModerationTimeoutMS: number
+  ContentModerationRetryCount: number
+  ContentModerationSampleRate: number
+  ContentModerationFailOpen: boolean
+  ContentModerationThresholds: string
+}
 export type RequestPolicySettings = RetrySettings &
   HealthSettings &
   FilteringSettings &
@@ -69,4 +82,17 @@ export const defaultRequestPolicySettings: RequestPolicySettings = {
   CheckSensitiveEnabled: false,
   CheckSensitiveOnPromptEnabled: false,
   SensitiveWords: '',
+  ContentModerationEnabled: false,
+  ContentModerationEngine: 'typesafe',
+  ContentModerationMode: 'pre_block',
+  ContentModerationBaseURL: 'https://jev.bocha.cn',
+  ContentModerationModel: 'bocha-jev-v1',
+  ContentModerationAPIKey: '',
+  ContentModerationKeyConfigured: false,
+  ContentModerationTimeoutMS: 3000,
+  ContentModerationRetryCount: 2,
+  ContentModerationSampleRate: 100,
+  ContentModerationFailOpen: false,
+  ContentModerationThresholds:
+    '{"harassment":0.98,"harassment/threatening":0.9,"hate":0.65,"hate/threatening":0.65,"illicit":0.95,"illicit/violent":0.95,"self-harm":0.65,"self-harm/instructions":0.65,"self-harm/intent":0.85,"sexual":0.65,"sexual/minors":0.65,"violence":0.95,"violence/graphic":0.95}',
 }

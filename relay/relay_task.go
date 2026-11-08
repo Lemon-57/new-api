@@ -22,7 +22,9 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -198,6 +200,18 @@ func ApplyOriginTaskAffinity(c *gin.Context, info *relaycommon.RelayInfo) *dto.T
 // 构建/发送/解析上游请求 → 提交后计费调整(AdjustBillingOnSubmit)。
 // 共享控制器编排负责未落库退款、最终额度预留、落库和结算。
 func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
+	if setting.GetContentModerationConfig().Enabled || setting.ShouldCheckPromptSensitive() {
+		if body, exists := c.Get("task_request"); exists {
+			text := service.TaskModerationText(body)
+			if text != "" {
+				checkInfo := *info
+				checkInfo.Request = &kitdto.GeneralOpenAIRequest{Prompt: text}
+				if err := CheckRequestModeration(c, &checkInfo); err != nil {
+					return nil, service.TaskErrorWrapperLocal(err, string(err.GetErrorCode()), err.StatusCode)
+				}
+			}
+		}
+	}
 	info.InitChannelMeta(c)
 
 	// 1. 确定 platform → 创建适配器 → 验证请求

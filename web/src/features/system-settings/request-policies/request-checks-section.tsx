@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
@@ -34,6 +34,8 @@ import {
 } from '@/components/ui/form'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import {
@@ -46,11 +48,24 @@ import {
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useSavePolicy } from './use-save-policy'
+import { ModerationKeys } from './moderation-keys'
 
 const sensitiveSchema = z.object({
   CheckSensitiveEnabled: z.boolean(),
   CheckSensitiveOnPromptEnabled: z.boolean(),
   SensitiveWords: z.string().optional(),
+  ContentModerationEnabled: z.boolean(),
+  ContentModerationEngine: z.string(),
+  ContentModerationTimeoutMS: z.number().int().min(100).max(60000),
+  ContentModerationRetryCount: z.number().int().min(0).max(5),
+  ContentModerationSampleRate: z.number().int().min(0).max(100),
+  ContentModerationMode: z.string(),
+  ContentModerationBaseURL: z.string(),
+  ContentModerationModel: z.string(),
+  ContentModerationAPIKey: z.string().optional(),
+  ContentModerationKeyConfigured: z.boolean(),
+  ContentModerationFailOpen: z.boolean(),
+  ContentModerationThresholds: z.string(),
 })
 
 type SensitiveFormValues = z.infer<typeof sensitiveSchema>
@@ -64,6 +79,7 @@ export function RequestChecksSection({
 }: RequestChecksSectionProps) {
   const { t } = useTranslation()
   const updateOption = useSavePolicy()
+  const [keyMode, setKeyMode] = useState('append')
   const form = useForm<SensitiveFormValues>({
     resolver: zodResolver(sensitiveSchema),
     defaultValues,
@@ -76,16 +92,19 @@ export function RequestChecksSection({
   const onSubmit = async (values: SensitiveFormValues) => {
     const updates = Object.entries(values).filter(
       ([key, value]) =>
+        key !== 'ContentModerationKeyConfigured' &&
+        !(key === 'ContentModerationAPIKey' && !String(value ?? '').trim()) &&
         value !== defaultValues[key as keyof SensitiveFormValues]
     )
 
     try {
       if (updates.length > 0) {
-        await updateOption.mutateAsync(
-          Object.fromEntries(
+        const options = Object.fromEntries(
             updates.map(([key, value]) => [key, String(value ?? '')])
           )
-        )
+        if (options.ContentModerationAPIKey) options.ContentModerationKeyUpdateMode = keyMode
+        await updateOption.mutateAsync(options)
+        form.setValue('ContentModerationAPIKey', '')
       }
     } catch (error) {
       handleServerError(error)
@@ -108,7 +127,7 @@ export function RequestChecksSection({
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
             isSaving={form.formState.isSubmitting}
-            saveLabel='Save sensitive words'
+            saveLabel='Save request checks'
           />
           <Alert>
             <AlertDescription>
@@ -196,6 +215,141 @@ export function RequestChecksSection({
               </FormItem>
             )}
           />
+
+          <div className='border-border mt-6 space-y-4 rounded-lg border p-4'>
+            <div>
+              <h3 className='text-sm font-medium'>{t('AI content moderation')}</h3>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'Runs a TypeSafe Jev check after local keyword filtering and before the upstream model. Blocked requests return HTTP 403.'
+                )}
+              </p>
+            </div>
+            <FormField
+              control={form.control}
+              name='ContentModerationEnabled'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Enable AI moderation')}</FormLabel>
+                    <FormDescription>
+                      {t('Use TypeSafe Jev to inspect supported request text.')}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  </FormControl>
+                </SettingsSwitchItem>
+              )}
+            />
+            <SettingsControlChildren>
+              <FormField
+                control={form.control}
+                name='ContentModerationMode'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('AI moderation mode')}</FormLabel>
+                    <Select value={field.value} onValueChange={(value) => value && field.onChange(value)} items={[{ value: 'pre_block', label: t('Pre-block') }, { value: 'observe', label: t('Observe only') }]}>
+                      <FormControl><SelectTrigger className='w-full'><SelectValue /></SelectTrigger></FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectItem value='pre_block'>{t('Pre-block')}</SelectItem>
+                        <SelectItem value='observe'>{t('Observe only')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </FormItem>
+                )}
+              />
+            </SettingsControlChildren>
+            <div className='grid gap-4 md:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='ContentModerationBaseURL'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Jev Base URL')}</FormLabel>
+                    <FormControl><Input {...field} /></FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='ContentModerationModel'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Jev model')}</FormLabel>
+                    <FormControl><Input {...field} /></FormControl>
+                  </FormItem>
+                )}
+              />
+            </div>
+            <FormField
+              control={form.control}
+              name='ContentModerationAPIKey'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Jev API keys')}</FormLabel>
+                  <FormControl>
+                    <Textarea rows={3} className='[-webkit-text-security:disc]' autoComplete='new-password' spellCheck={false} placeholder={form.watch('ContentModerationKeyConfigured') ? t('Configured; leave blank to keep it') : ''} {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    {t('Enter one key per line. Duplicates are removed. Blank keeps existing keys. Keys are encrypted and never returned.')}
+                  </FormDescription>
+                </FormItem>
+              )}
+            />
+            <FormItem>
+              <FormLabel htmlFor='moderation-key-mode'>{t('Key update mode')}</FormLabel>
+              <Select value={keyMode} onValueChange={(value) => { if (value) setKeyMode(value) }}>
+                <SelectTrigger id='moderation-key-mode'><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='append'>{t('Append keys')}</SelectItem>
+                  <SelectItem value='replace'>{t('Replace all keys')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </FormItem>
+            <ModerationKeys />
+            <FormField
+              control={form.control}
+              name='ContentModerationFailOpen'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>{t('Allow requests when Jev is unavailable')}</FormLabel>
+                    <FormDescription>
+                      {t('When disabled, an unavailable moderation service returns HTTP 503.')}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl><Switch checked={field.value} onCheckedChange={field.onChange} /></FormControl>
+                </SettingsSwitchItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='ContentModerationThresholds'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Jev category thresholds')}</FormLabel>
+                  <FormControl><Textarea rows={4} {...field} /></FormControl>
+                  <FormDescription>{t('JSON map of category names to scores from 0 to 1.')}</FormDescription>
+                </FormItem>
+              )}
+            />
+            <div className='grid gap-4 md:grid-cols-3'>
+              {([
+                { name: 'ContentModerationTimeoutMS', label: t('Moderation timeout (ms)'), min: 100, max: 60000 },
+                { name: 'ContentModerationRetryCount', label: t('Moderation retries'), min: 0, max: 5 },
+                { name: 'ContentModerationSampleRate', label: t('Moderation sample rate (%)'), min: 0, max: 100 },
+              ] as const).map((item) => (
+                <FormField key={item.name} control={form.control} name={item.name} render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{item.label}</FormLabel>
+                    <FormControl><Input {...field} type='number' min={item.min} max={item.max} step={1} onChange={(event) => field.onChange(event.target.valueAsNumber)} /></FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+              ))}
+            </div>
+          </div>
         </SettingsForm>
       </Form>
     </SettingsSection>
