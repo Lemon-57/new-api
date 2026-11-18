@@ -706,3 +706,86 @@ func TestAzureHostedWebSearch(t *testing.T) {
 		})
 	}
 }
+
+func TestOaiResponsesStreamHandlerNonSuccessTerminalLifecycle(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 1
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	for _, tc := range []struct {
+		name, event, outcome                    string
+		bareError, cancelBeforeFlush, failFlush bool
+	}{
+		{name: "failed", event: "response.failed", outcome: "failed"},
+		{name: "incomplete", event: "response.incomplete", outcome: "incomplete"},
+		{name: "cancelled", event: "response.cancelled", outcome: "cancelled"},
+		{name: "canceled alias", event: "response.canceled", outcome: "cancelled"},
+		{name: "bare error then failed with usage", event: "response.failed", outcome: "failed", bareError: true},
+		{name: "failed flush", event: "response.failed", outcome: "failed", failFlush: true},
+		{name: "cancellation before failed flush", event: "response.failed", outcome: "failed", cancelBeforeFlush: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			details := ""
+			if tc.outcome == "failed" {
+				details = `,"error":{"code":"upstream_failure","type":"server_error"}`
+			}
+			if tc.outcome == "incomplete" {
+				details = `,"incomplete_details":{"reason":"max_output_tokens"}`
+			}
+			payload := fmt.Sprintf(`{"type":%q,"response":{"status":%q%s,"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12},"output":[{"id":"img_1","type":"image_generation_call","status":"completed","result":"synthetic-image"}]}}`, tc.event, tc.outcome, details)
+			sse := "data: " + payload + "\n\n"
+			if tc.bareError {
+				sse = "data: {\"type\":\"error\",\"code\":\"earlier_error\"}\n\n" + sse
+			}
+			body := &responsesLifecycleBody{data: strings.NewReader(sse), waiting: make(chan struct{}), closed: make(chan struct{}), closeErr: io.ErrClosedPipe}
+			t.Cleanup(func() { require.NoError(t, body.Close()) })
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			writer := &responsesLifecycleWriter{ResponseRecorder: httptest.NewRecorder(), body: body, needle: payload + "\n\n", cancelBeforeFlush: tc.cancelBeforeFlush}
+			if tc.cancelBeforeFlush {
+				writer.cancel = cancel
+			}
+			writeErr := errors.New("terminal flush failure")
+			if tc.failFlush {
+				writer.flushErr = writeErr
+			}
+			c, _ := gin.CreateTestContext(writer)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+			info := &relaycommon.RelayInfo{OriginModelName: "gpt-4o", IsStream: true, DisablePing: true, StartTime: time.Now(), RelayFormat: types.RelayFormatOpenAIResponses, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-4o"}}
+			usage, apiErr := OaiResponsesStreamHandler(c, info, &http.Response{StatusCode: http.StatusOK, Body: body, Header: http.Header{"Content-Type": {"text/event-stream"}}})
+			require.Nil(t, apiErr)
+			require.Equal(t, tc.outcome, info.StreamStatus.ResponseOutcome())
+			require.NotEqual(t, string(relaycommon.ResponseOutcomeCompleted), info.StreamStatus.ResponseOutcome())
+			if tc.cancelBeforeFlush {
+				require.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+			} else {
+				require.Equal(t, relaycommon.StreamEndReasonHandlerStop, info.StreamStatus.EndReason)
+			}
+			require.Equal(t, 7, usage.PromptTokens)
+			require.Equal(t, 5, usage.CompletionTokens)
+			require.Equal(t, 12, usage.TotalTokens)
+			require.Contains(t, writer.Body.String(), payload+"\n\n")
+			require.NotNil(t, info.ResponsesUsageInfo)
+			require.Equal(t, 1, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolImageGeneration].CallCount)
+			status := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1).Snapshot()["stream_status"].(map[string]any)
+			require.Equal(t, tc.outcome, status["response_status"])
+			if tc.outcome == "failed" {
+				require.Equal(t, "error", status["status"])
+				require.Equal(t, "upstream_failure", info.StreamStatus.OutcomeSnapshot().ErrorCode)
+			}
+			if tc.outcome == "incomplete" {
+				require.Equal(t, "max_output_tokens", info.StreamStatus.OutcomeSnapshot().IncompleteReason)
+			}
+			if tc.failFlush {
+				require.ErrorIs(t, info.StreamStatus.EndError, writeErr)
+			}
+			if tc.bareError {
+				require.Contains(t, writer.Body.String(), "earlier_error")
+			}
+			select {
+			case <-body.closed:
+			default:
+				t.Fatal("upstream body was not closed")
+			}
+		})
+	}
+}

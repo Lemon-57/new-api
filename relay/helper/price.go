@@ -58,8 +58,35 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 		// normal group ratio
 		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	}
+	// Ingress identity is set once on the incoming request by the trusted
+	// reverse proxy. Recomputing a group on retry must retain its route factor.
+	if factor, exists := ctx.Get("ingress_billing_factor"); exists && ingressRouteChargesTokens(relayInfo) {
+		if value, ok := factor.(float64); ok {
+			groupRatioInfo.GroupRatio *= value
+			ctx.Set("ingress_billing_applied_factor", value)
+		}
+	}
 
 	return groupRatioInfo
+}
+
+// Independent media/request-priced calls retain their existing price. A
+// billing expression that may use fixed() is excluded in every branch.
+func ingressRouteChargesTokens(info *relaycommon.RelayInfo) bool {
+	if info == nil || info.RelayFormat == types.RelayFormatOpenAIImage ||
+		info.RelayFormat == types.RelayFormatTask || info.RelayFormat == types.RelayFormatMjProxy ||
+		strings.HasPrefix(info.GetOriginModelName(), "gpt-image-") {
+		return false
+	}
+	name := info.GetBillingModelName()
+	if billing_setting.GetBillingMode(name) == billing_setting.BillingModeTieredExpr {
+		if expression, ok := billing_setting.GetBillingExpr(name); ok {
+			return !billingexpr.UsesFixedPricing(expression)
+		}
+	} else if _, perRequest := ratio_setting.GetModelPrice(name, false); perRequest {
+		return false
+	}
+	return true
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {

@@ -796,11 +796,17 @@ func executeTaskSubmissionWith(
 	task.PrivateData.BillingContext = &model.TaskBillingContext{
 		ModelPrice:      relayInfo.PriceData.ModelPrice,
 		GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
+		BillingRoute:    c.GetString("ingress_billing_route"),
 		ModelRatio:      relayInfo.PriceData.ModelRatio,
 		OtherRatios:     relayInfo.PriceData.OtherRatios(),
 		OriginModelName: relayInfo.OriginModelName,
 		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
 		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
+	}
+	if factor, ok := c.Get("ingress_billing_applied_factor"); ok {
+		task.PrivateData.BillingContext.RouteFactor, _ = factor.(float64)
+	} else {
+		task.PrivateData.BillingContext.RouteFactor = 1
 	}
 	task.Quota = result.Quota
 	task.Data = result.TaskData

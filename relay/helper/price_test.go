@@ -23,6 +23,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestIngressRouteRatioRetainedInTieredSnapshot(t *testing.T) {
+	previousPrices := ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices)) })
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"route-request":0.01}`))
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		saved[key] = value
+		return nil
+	}))
+	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(saved)) })
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{"route-test":"tiered_expr","route-image":"tiered_expr"}`,
+		"billing_setting.billing_expr":    `{"route-test":"tier(\"token\", p * 1 + c * 4)","route-image":"tier(\"image\", fixed(0.01))"}`,
+		"group_ratio_setting.group_ratio": `{"default":0.2}`,
+	}))
+	for _, tc := range []struct {
+		name  string
+		model string
+		want  float64
+	}{
+		{"token", "route-test", 0.22},
+		{"fixed image", "route-image", 0.2},
+		{"legacy request", "route-request", 0.2},
+		{"image endpoint", "gpt-image-2.5-flare", 0.2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			ctx.Set("ingress_billing_factor", float64(1.1))
+			info := &relaycommon.RelayInfo{OriginModelName: tc.model, UsingGroup: "default", UserGroup: "default"}
+			group := HandleGroupRatio(ctx, info)
+			require.InDelta(t, tc.want, group.GroupRatio, 0.0000001)
+			if tc.model == "route-test" {
+				price, err := ModelPriceHelper(ctx, info, 1_000_000, &types.TokenCountMeta{})
+				require.NoError(t, err)
+				require.Equal(t, int(110000), price.QuotaToPreConsume)
+				require.InDelta(t, tc.want, info.TieredBillingSnapshot.GroupRatio, 0.0000001)
+			}
+		})
+	}
+}
+
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
 import { PageTransition } from '@/components/page-transition'
+import { useApiInfo } from '@/features/dashboard/hooks/use-status-data'
 
 import {
   LoadingSkeleton,
@@ -32,12 +33,14 @@ import {
   ModelCardGrid,
   ModelDetailsDrawer,
 } from './components'
+import { ApiRouteNotice } from './components/api-route-notice'
 import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
 import { usePricingData } from './hooks/use-pricing-data'
 
 export function Pricing() {
   const { t } = useTranslation()
+  const { items: apiRoutes } = useApiInfo()
   const [selectedModelName, setSelectedModelName] = useState<string | null>(
     null
   )
@@ -201,6 +204,8 @@ export function Pricing() {
               className='mx-auto mt-4 max-w-2xl sm:mt-6'
             />
           </header>
+
+          <ApiRouteNotice routes={apiRoutes} />
 
           <div className='grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]'>
             <PricingSidebar

@@ -31,6 +31,7 @@ import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialo
 import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
+import { AlipayCheckoutCard } from './components/alipay-checkout-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
 import { DEFAULT_DISCOUNT_RATE, PAYMENT_TYPES } from './constants'
 import {
@@ -91,6 +92,8 @@ export function Wallet(props: WalletProps) {
       : currency?.usdExchangeRate || 1
   }, [currency?.quotaDisplayType, currency?.usdExchangeRate])
   const {
+    alipayCheckout,
+    setAlipayCheckout,
     amount: paymentAmount,
     calculating,
     processing,
@@ -290,12 +293,14 @@ export function Wallet(props: WalletProps) {
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
 
+            {alipayCheckout && <AlipayCheckoutCard order={alipayCheckout} onPaid={fetchUser} onClose={() => setAlipayCheckout(null)} />}
             <div
-              className={
+              className={[
+                alipayCheckout ? 'hidden' : 'grid gap-4',
                 showSubscriptionPanel
-                  ? 'grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] xl:items-start'
-                  : 'grid gap-4'
-              }
+                  ? 'xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] xl:items-start'
+                  : '',
+              ].join(' ')}
             >
               <div id='wallet-add-funds' className='scroll-mt-4'>
                 <RechargeFormCard

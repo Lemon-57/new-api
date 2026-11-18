@@ -50,7 +50,55 @@ func EstimateRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *rela
 	if !constant.CountToken {
 		return 0, nil
 	}
+	if estimate, ok := fastResponsesTokenEstimate(meta, info); ok {
+		return estimate, nil
+	}
 	return CountRequestToken(c, meta, info)
+}
+
+const (
+	fastResponsesTokenEstimateMinBytes = 64 * 1024
+	fastResponsesTokenEstimateSample   = 16 * 1024
+)
+
+// fastResponsesTokenEstimate avoids tokenizing a very large Responses prompt
+// before the upstream request starts. Responses providers normally return
+// authoritative input usage in the terminal event, so a sampled estimate is
+// sufficient for the pre-consume reservation and is replaced by upstream
+// usage during settlement. Requests with media keep the exact path because
+// their token cost cannot be inferred from text alone.
+func fastResponsesTokenEstimate(meta *types.TokenCountMeta, info *relaycommon.RelayInfo) (int, bool) {
+	if meta == nil || info == nil || info.RelayFormat != types.RelayFormatOpenAIResponses ||
+		meta.TokenType == types.TokenTypeTextNumber || len(meta.Files) > 0 ||
+		len(meta.CombineText) < fastResponsesTokenEstimateMinBytes {
+		return 0, false
+	}
+
+	model := info.OriginModelName
+	if model == "" {
+		return 0, false
+	}
+	sample := meta.CombineText
+	if len(sample) > fastResponsesTokenEstimateSample {
+		end := fastResponsesTokenEstimateSample
+		for end > 0 && !utf8.RuneStart(sample[end]) {
+			end--
+		}
+		sample = sample[:end]
+	}
+	if sample == "" {
+		return 0, false
+	}
+	sampleTokens := tokenkit.Count(model, sample)
+	if sampleTokens <= 0 {
+		return 0, false
+	}
+	estimate := (sampleTokens*len(meta.CombineText) + len(sample) - 1) / len(sample)
+	if estimate <= 0 {
+		return 0, false
+	}
+	estimate += meta.ToolsCount*8 + meta.MessagesCount*3 + meta.NameCount*3 + 3
+	return estimate, true
 }
 
 // CountRequestToken counts request tokens regardless of the billing estimation

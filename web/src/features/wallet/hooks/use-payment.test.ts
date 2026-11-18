@@ -16,10 +16,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
+import { api } from '@/lib/api'
 
 import { PAYMENT_TYPES } from '../constants'
-import { requestPaymentAmount } from './use-payment'
+import { requestPaymentAmount, usePayment } from './use-payment'
+import { renderHook, act, render, waitFor, cleanup } from '@testing-library/react'
+import { createElement } from 'react'
+import { AlipayCheckoutCard } from '../components/alipay-checkout-card'
+
+vi.mock('@/lib/api', () => ({ api: { post: vi.fn(), get: vi.fn() } }))
 
 describe('payment amount routing', () => {
   test('uses the dedicated Waffo amount calculator', async () => {
@@ -46,4 +52,35 @@ describe('payment amount routing', () => {
     expect(amount).toBe(18.75)
     expect(calls).toEqual(['waffo:120'])
   })
+})
+
+
+test('keeps Alipay QR checkout in the wallet without a popup or document navigation', async () => {
+  const open = vi.spyOn(window, 'open')
+  const { result } = renderHook(() => usePayment())
+  vi.mocked(api.post).mockResolvedValueOnce({ data: { message: 'success', url: '/api/user/alipay/checkout', data: { trade_no: 'synthetic', qr_code: 'https://qr.alipay.com/test', amount: '10.00' } } })
+  await act(async () => { expect(await result.current.processPayment(10, 'alipay')).toBe(true) })
+  expect(result.current.alipayCheckout).toEqual({ tradeNo: 'synthetic', qrCode: 'https://qr.alipay.com/test', amount: '10.00' })
+  expect(open).not.toHaveBeenCalled()
+  expect(api.post).toHaveBeenCalledTimes(1)
+})
+
+
+test('in-page QR confirms only the matching order and refreshes balance', async () => {
+  const paid = vi.fn()
+  vi.mocked(api.get).mockResolvedValue({ data: { success: true, data: { items: [{ trade_no: 'original', status: 'success' }] } } })
+  const view = render(createElement(AlipayCheckoutCard, { order: { tradeNo: 'original', qrCode: 'https://qr.alipay.com/test', amount: '10.00' }, onPaid: paid, onClose: vi.fn() }))
+  await waitFor(() => expect(view.getByRole('status').textContent).toContain('Payment confirmed. Balance updated.'))
+  expect(paid).toHaveBeenCalledTimes(1)
+  expect(view.container.querySelector('svg[role="img"]')).toBeNull()
+  cleanup()
+})
+
+test('another successful order never confirms the displayed QR order', async () => {
+  const paid = vi.fn()
+  vi.mocked(api.get).mockResolvedValue({ data: { success: true, data: { items: [{ trade_no: 'other', status: 'success' }] } } })
+  const view = render(createElement(AlipayCheckoutCard, { order: { tradeNo: 'original', qrCode: 'https://qr.alipay.com/test', amount: '10.00' }, onPaid: paid, onClose: vi.fn() }))
+  await waitFor(() => expect(view.getByRole('status').textContent).toContain('Retrying automatically'))
+  expect(paid).not.toHaveBeenCalled()
+  cleanup()
 })

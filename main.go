@@ -239,7 +239,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(host, port),
-		Handler: server,
+		Handler: router.WithRelayAliases(server),
 	}
 
 	go func() {

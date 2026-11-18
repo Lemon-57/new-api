@@ -97,6 +97,12 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			streamResponse.Response != nil && info.StreamStatus.ResponseOutcome() == string(relaycommon.ResponseOutcomeCompleted) {
 			sr.Done()
 		}
+		switch streamResponse.Type {
+		case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+			// The terminal was delivered; stop reading while preserving its
+			// protocol outcome and usage. A bare error may still precede it.
+			sr.Stop(nil)
+		}
 	})
 
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)

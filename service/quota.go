@@ -121,6 +121,12 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	if ok {
 		actualGroupRatio = userGroupRatio
 	}
+	if routeFactor, exists := ctx.Get("ingress_billing_factor"); exists {
+		if factor, valid := routeFactor.(float64); valid {
+			actualGroupRatio *= factor
+			ctx.Set("ingress_billing_applied_factor", factor)
+		}
+	}
 
 	quotaInfo := QuotaInfo{
 		InputDetails: TokenDetails{

@@ -73,6 +73,7 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.SystemPerformanceCheck())
 	relayV1Router.Use(middleware.TokenAuth())
 	{
+		relayV1Router.GET("/billing", controller.GetIngressBilling)
 		// Responses WebSocket route. Channel selection happens after the first
 		// response.create event; each event runs the ordinary request limiter.
 		relayV1Router.GET("/responses", controller.ResponsesWebSocket)

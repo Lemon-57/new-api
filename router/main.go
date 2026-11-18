@@ -13,6 +13,11 @@ import (
 )
 
 func SetRouter(router *gin.Engine, assets WebAssets) {
+	ingressBilling, err := middleware.IngressBilling()
+	if err != nil {
+		panic(err) // An invalid billing ingress must not serve requests at a fallback price.
+	}
+	router.Use(ingressBilling)
 	SetApiRouter(router)
 	SetDashboardRouter(router)
 	SetRelayRouter(router)

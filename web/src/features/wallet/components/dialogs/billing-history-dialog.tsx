@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Search, Copy, Check, ChevronLeft, ChevronRight } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -66,6 +66,7 @@ export function BillingHistoryDialog({
 }: BillingHistoryDialogProps) {
   const { t } = useTranslation()
   const {
+    refresh,
     records,
     total,
     page,
@@ -79,6 +80,13 @@ export function BillingHistoryDialog({
     handleSearch,
     handleCompleteOrder,
   } = useBillingHistory()
+
+  useEffect(() => {
+    if (!open) return
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, 5000)
+    return () => window.clearInterval(timer)
+  }, [open, refresh])
 
   const [confirmTradeNo, setConfirmTradeNo] = useState<string | null>(null)
   const { copyToClipboard, copiedText } = useCopyToClipboard({ notify: false })

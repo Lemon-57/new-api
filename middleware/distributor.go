@@ -100,10 +100,16 @@ func Distribute() func(c *gin.Context) {
 		if pinned || shouldSelectChannel {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 			var selectErr *service.ChannelSelectError
-			if value, exists := c.Get(contextKeyTaskPluginEndpointSelection); exists && !pinned {
+			if value, exists := c.Get(contextKeyTaskPluginEndpointSelection); exists {
 				if selected, ok := value.(taskPluginEndpointSelection); ok && selected.Model == modelRequest.Model && selected.Channel != nil && selected.Channel.Status == common.ChannelStatusEnabled {
-					if matches, _ := model.ChannelSatisfiesFilters(selected.Channel, modelRequest.Model, constraints.Filters); matches {
-						channel = selected.Channel
+					reuseSelected := true
+					if pin, found, _ := constraints.ResolvedPin(); found {
+						reuseSelected = selected.Channel.Id == pin.ChannelId
+					}
+					if reuseSelected {
+						if matches, _ := model.ChannelSatisfiesFilters(selected.Channel, modelRequest.Model, constraints.Filters); matches {
+							channel = selected.Channel
+						}
 					}
 				}
 			}

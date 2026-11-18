@@ -81,7 +81,10 @@ export async function requestPaymentAmount(
   return Number.parseFloat(response.data)
 }
 
+export interface AlipayCheckoutData { tradeNo: string; qrCode: string; amount: string }
+
 export function usePayment() {
+  const [alipayCheckout, setAlipayCheckout] = useState<AlipayCheckoutData | null>(null)
   const [amount, setAmount] = useState<number>(0)
   const [calculating, setCalculating] = useState(false)
   const [processing, setProcessing] = useState(false)
@@ -141,6 +144,15 @@ export function usePayment() {
         // Handle non-Stripe payment
         if (!isStripe && response.data) {
           const url = (response as unknown as { url?: string }).url
+          if (url === '/api/user/alipay/checkout') {
+            if (!('trade_no' in response.data) || !('qr_code' in response.data) || !('amount' in response.data)) throw new Error('Payment request failed')
+            const { trade_no, qr_code, amount } = response.data
+            if (typeof trade_no !== 'string' || typeof qr_code !== 'string' || typeof amount !== 'string') throw new Error('Payment request failed')
+            const qrURL = new URL(qr_code)
+            if (qrURL.protocol !== 'https:' || qrURL.hostname !== 'qr.alipay.com') throw new Error('Payment request failed')
+            setAlipayCheckout({ tradeNo: trade_no, qrCode: qr_code, amount })
+            return true
+          }
           if (url) {
             submitPaymentForm(url, response.data)
             toast.success(i18next.t('Redirecting to payment page...'))
@@ -160,6 +172,8 @@ export function usePayment() {
   )
 
   return {
+    alipayCheckout,
+    setAlipayCheckout,
     amount,
     calculating,
     processing,

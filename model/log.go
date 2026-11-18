@@ -350,6 +350,14 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
 	other := params.Other
+	if route := c.GetString("ingress_billing_route"); route != "" {
+		other.SetPublic("billing_route", route)
+		if factor, ok := c.Get("ingress_billing_applied_factor"); ok {
+			other.SetPublic("route_rate_multiplier", factor)
+		} else {
+			other.SetPublic("route_rate_multiplier", float64(1))
+		}
+	}
 	content := other.setContent(params.Content)
 	otherStr := other.JSONString()
 	// 判断是否需要记录 IP
