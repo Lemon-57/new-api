@@ -550,10 +550,14 @@ type moderationCall struct {
 // fetch path against a fake moderation API that answers status and reply.
 func runModeration(t *testing.T, config map[string]any, format, path, body string, status int, reply string) (jsplugin.TransformResult, []moderationCall, error) {
 	t.Helper()
+	endpoint, urlField := "/v1/moderations", "url"
+	if config["engine"] == "typesafe" {
+		endpoint, urlField = "/v1/systemone", "typeSafeUrl"
+	}
 	var calls []moderationCall
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "/v1/moderations", r.URL.Path)
+		assert.Equal(t, endpoint, r.URL.Path)
 		raw, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		call := moderationCall{Authorization: r.Header.Get("Authorization")}
@@ -568,7 +572,7 @@ func runModeration(t *testing.T, config map[string]any, format, path, body strin
 	plugin, found := jsplugin.DefaultRegistry.Generation().Get("content-moderation")
 	require.True(t, found)
 	config = maps.Clone(config)
-	config["url"] = server.URL + "/v1/moderations"
+	config[urlField] = server.URL + endpoint
 	raw, err := common.Marshal(config)
 	require.NoError(t, err)
 	validated, err := plugin.ValidateConfig(raw)
@@ -713,6 +717,113 @@ func TestContentModerationPlugin(t *testing.T) {
 			assert.NotContains(t, transformErr.Thrown, "question", "the error leaves the request text out")
 			assert.Len(t, calls, 1)
 		}
+	})
+}
+
+func TestContentModerationTypeSafe(t *testing.T) {
+	const path = "/v1/chat/completions"
+	const chat = `{"messages":[{"role":"system","content":"private instructions"},{"role":"user","content":"first"},{"role":"assistant","content":"private reply"},{"role":"user","content":"second"}]}`
+	const resultBody = `{"model":"jev-1.14.0","answers":{"violence":{"type":"noul","noul":0.9}},"usage":{"input_tokens":100,"output_tokens":0}}`
+	config := map[string]any{
+		"engine": "typesafe", "scope": "all_user",
+		"url": "https://openai.example.invalid/v1/moderations", "apiKey": "openai-fixture", "model": "openai-fixture-model",
+		"typeSafeApiKey": "typesafe-fixture", "typeSafeModel": "jev-test", "typeSafeCategories": []string{"violence"},
+	}
+	t.Run("uses its own credentials and sends only scoped text", func(t *testing.T) {
+		result, calls, err := runModeration(t, config, "openai", path, chat, http.StatusOK, resultBody)
+		require.NoError(t, err)
+		assert.Equal(t, "continue", result.Action)
+		require.Len(t, calls, 1)
+		assert.Equal(t, "Bearer typesafe-fixture", calls[0].Authorization)
+		assert.Equal(t, "jev-test", calls[0].Body["model"])
+		assert.Equal(t, "first\n\nsecond", calls[0].Body["state"])
+		assert.NotContains(t, calls[0].Body, "input")
+		questions, ok := calls[0].Body["questions"].(map[string]any)
+		require.True(t, ok)
+		require.Len(t, questions, 1)
+		require.Contains(t, questions, "violence")
+		question, ok := questions["violence"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "noul", question["type"])
+	})
+	t.Run("blocks on the configured threshold including equality", func(t *testing.T) {
+		custom := maps.Clone(config)
+		custom["typeSafeThresholds"] = []map[string]any{{"category": "violence", "threshold": 0.9}}
+		result, calls, err := runModeration(t, custom, "openai", path, chat, http.StatusOK, resultBody)
+		require.NoError(t, err)
+		require.Len(t, calls, 1)
+		assert.Equal(t, "reject", result.Action)
+		assert.Equal(t, "moderation.flagged", result.Code)
+		assert.Equal(t, "violence", result.RuleID)
+	})
+	t.Run("fails closed without calling the other engine", func(t *testing.T) {
+		for _, testCase := range []struct {
+			status int
+			body   string
+			want   string
+		}{
+			{http.StatusTooManyRequests, `{"detail":"secret upstream error"}`, "TypeSafe API returned HTTP 429"},
+			{http.StatusOK, `{"results":[]}`, "TypeSafe API returned no answers"},
+			{http.StatusOK, `{"answers":{}}`, "TypeSafe API returned an invalid answer for violence"},
+			{http.StatusOK, `{"answers":{"violence":{"type":"noul","noul":1.2}}}`, "TypeSafe API returned an invalid answer for violence"},
+		} {
+			_, calls, err := runModeration(t, config, "openai", path, chat, testCase.status, testCase.body)
+			var transformErr *jsplugin.TransformError
+			require.ErrorAs(t, err, &transformErr)
+			assert.Contains(t, transformErr.Thrown, testCase.want)
+			assert.NotContains(t, transformErr.Thrown, "secret upstream error")
+			assert.Len(t, calls, 1)
+		}
+	})
+	t.Run("uses all categories when none is selected", func(t *testing.T) {
+		all := maps.Clone(config)
+		delete(all, "typeSafeCategories")
+		_, calls, err := runModeration(t, all, "openai", path, chat, http.StatusOK, resultBody)
+		require.Error(t, err, "the fake upstream omits the other required answers")
+		require.Len(t, calls, 1)
+		questions, ok := calls[0].Body["questions"].(map[string]any)
+		require.True(t, ok)
+		assert.Len(t, questions, 13)
+	})
+	t.Run("never audits the System One endpoint itself", func(t *testing.T) {
+		for _, endpoint := range []string{"/v1/systemone", "/typesafe/v1/systemone"} {
+			result, calls, err := runModeration(t, config, "openai", endpoint, chat, http.StatusOK, resultBody)
+			require.NoError(t, err)
+			assert.Equal(t, "continue", result.Action)
+			assert.Empty(t, calls)
+		}
+	})
+	t.Run("keeps Unicode intact and rejects inputs over the request budget", func(t *testing.T) {
+		prefix := strings.Repeat("a", 24*1024-1)
+		for _, testCase := range []struct {
+			state    string
+			want     []string
+			rejected bool
+		}{
+			{state: prefix + "🌱 seed", want: []string{prefix, "🌱 seed"}},
+			{state: strings.Repeat("中", 32*1024+1), rejected: true},
+		} {
+			body, err := common.Marshal(map[string]string{"input": testCase.state})
+			require.NoError(t, err)
+			result, calls, err := runModeration(t, config, "openai_responses", "/v1/responses", string(body), http.StatusOK, resultBody)
+			require.NoError(t, err)
+			require.Len(t, calls, len(testCase.want))
+			for index, call := range calls {
+				assert.Equal(t, testCase.want[index], call.Body["state"])
+			}
+			if testCase.rejected {
+				assert.Equal(t, "reject", result.Action)
+				assert.Equal(t, "moderation.too_long", result.Code)
+			} else {
+				assert.Equal(t, "continue", result.Action)
+			}
+		}
+	})
+	t.Run("rejects duplicate overrides on save", func(t *testing.T) {
+		plugin, found := jsplugin.DefaultRegistry.Generation().Get("content-moderation")
+		require.True(t, found)
+		_, err := plugin.ValidateConfig(json.RawMessage(`{"engine":"typesafe","typeSafeThresholds":[{"category":"violence","threshold":0.9},{"category":"violence","threshold":0.8}]}`))
+		require.ErrorContains(t, err, "only one threshold")
 	})
 }
 
