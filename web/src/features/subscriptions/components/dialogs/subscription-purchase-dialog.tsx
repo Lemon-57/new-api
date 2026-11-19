@@ -42,20 +42,10 @@ import {
 import { formatDuration, formatResetPeriod } from '../../lib'
 import type { PlanRecord } from '../../types'
 
-interface PaymentMethod {
-  type: string
-  name?: string
-}
-
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   plan: PlanRecord | null
-  enableStripe?: boolean
-  enableCreem?: boolean
-  enableWaffoPancake?: boolean
-  enableOnlineTopUp?: boolean
-  epayMethods?: PaymentMethod[]
   purchaseLimit?: number
   purchaseCount?: number
   userQuota?: number
@@ -67,24 +57,20 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const { currency } = useSystemConfig()
   const [paying, setPaying] = useState(false)
   const [selectedEpayMethod, setSelectedEpayMethod] = useState('')
+  const payment = props.plan?.payment
+  const epayMethods = payment?.epay
 
   useEffect(() => {
-    if (props.open && props.epayMethods && props.epayMethods.length > 0) {
-      setSelectedEpayMethod(props.epayMethods[0].type)
-    } else if (!props.open) {
-      setSelectedEpayMethod('')
-    }
-  }, [props.open, props.epayMethods])
+    setSelectedEpayMethod(props.open ? (epayMethods?.[0]?.type ?? '') : '')
+  }, [props.open, epayMethods])
 
   const plan = props.plan?.plan
   if (!plan) return null
 
-  const hasStripe = props.enableStripe && !!plan.stripe_price_id
-  const hasCreem = props.enableCreem && !!plan.creem_product_id
-  const hasWaffoPancake =
-    props.enableWaffoPancake && !!plan.waffo_pancake_product_id
-  const hasEpay =
-    props.enableOnlineTopUp && (props.epayMethods || []).length > 0
+  const hasStripe = payment?.stripe
+  const hasCreem = payment?.creem
+  const hasWaffoPancake = payment?.waffo_pancake
+  const hasEpay = (epayMethods?.length ?? 0) > 0
   const hasAnyPayment = hasStripe || hasCreem || hasWaffoPancake || hasEpay
   const totalAmount = Number(plan.total_amount || 0)
   const price = Number(plan.price_amount || 0).toFixed(2)
@@ -374,9 +360,9 @@ export function SubscriptionPurchaseDialog(props: Props) {
             {hasEpay && (
               <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
                 <Combobox
-                  options={(props.epayMethods || []).map((m) => ({
-                    value: m.type,
-                    label: m.name || m.type,
+                  options={(epayMethods ?? []).map((method) => ({
+                    value: method.type,
+                    label: method.name || method.type,
                   }))}
                   value={selectedEpayMethod}
                   onValueChange={(v) => v !== null && setSelectedEpayMethod(v)}

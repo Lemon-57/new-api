@@ -4,24 +4,162 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSystemOneChannelProbeUsesMappedModel(t *testing.T) {
+	const source = `
+export const meta = {apiVersion: 1, key: "typesafe", name: "TypeSafe", version: "1.0.0", author: {name: "Test"}, models: ["jev-latest"], fetchMode: "per_task",
+  usageSchema: {input_tokens: {type: "number", unit: "token", description: "Input token unit price"}}, usageExamples: [{label: "Decision", facts: {input_tokens: 108}}]};
+export function buildSubmitRequest(ctx) {
+  return {url: ctx.baseUrl + "/v1/systemone", method: "POST", headers: {Authorization: "Bearer " + ctx.apiKey}, body: {...ctx.requestBody, model: ctx.upstreamModel}};
+}
+export function parseSubmitResponse(ctx, response) {
+  if (response.body.answers?.probe?.type !== "noul") throw Error("missing answer");
+  return {taskId: ctx.publicTaskId, taskData: response.body, immediate: {status: "SUCCESS"}};
+}
+export function extractUsage() { return {input_tokens: 65792}; }
+export function extractUsageOnComplete(ctx, result, body) { return {input_tokens: body.usage.input_tokens}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+`
+	_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister("typesafe") })
+	billingConfig := config.GlobalConfig.Get("billing_setting")
+	previousPrices, err := common.Marshal(billing_setting.GetPluginBillingExprCopy())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, config.UpdateConfigFromMap(billingConfig, map[string]string{"plugin_billing_expr": string(previousPrices)}))
+	})
+	require.NoError(t, config.UpdateConfigFromMap(billingConfig, map[string]string{
+		"plugin_billing_expr": `{"typesafe::jev-latest":"tier(\"base\", u(\"input_tokens\") * 0.042 / 1000000)"}`,
+	}))
+	quotaUnit, logEnabled, exportEnabled := common.QuotaPerUnit, common.LogConsumeEnabled, common.DataExportEnabled
+	t.Cleanup(func() {
+		common.QuotaPerUnit, common.LogConsumeEnabled, common.DataExportEnabled = quotaUnit, logEnabled, exportEnabled
+	})
+	common.QuotaPerUnit, common.LogConsumeEnabled, common.DataExportEnabled = 500000, true, false
+	modelMapping := `{"jev-latest":"ateve-jev-v1"}`
+	const validResponse = `{"model":"ateve-jev-v1","answers":{"probe":{"type":"noul"}},"usage":{"input_tokens":108}}`
+	for _, test := range []struct {
+		name      string
+		model     string
+		status    int
+		response  string
+		wantErr   string
+		automatic bool
+	}{
+		{name: "manual success", status: http.StatusOK, response: validResponse},
+		{name: "scheduled success", status: http.StatusOK, response: validResponse, automatic: true},
+		{name: "scheduled failure", status: http.StatusUnauthorized, response: `{"detail":"fixture-secret"}`, wantErr: "HTTP 401 Unauthorized", automatic: true},
+		{name: "no answer", status: http.StatusOK, response: `{"model":"ateve-jev-v1","answers":{}}`, wantErr: "Invalid response"},
+		{name: "wrong answer type", status: http.StatusOK, response: `{"model":"ateve-jev-v1","answers":{"probe":{"type":"score"}}}`, wantErr: "Invalid response"},
+		{name: "oversized response", status: http.StatusOK, response: strings.Repeat(" ", (1<<20)+1), wantErr: "Invalid response"},
+		{name: "upstream rejection", status: http.StatusUnauthorized, response: `{"detail":"fixture-secret"}`, wantErr: "HTTP 401 Unauthorized"},
+		{name: "unlisted model never sent", model: "unlisted", wantErr: "Model not found"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("TEST_CHANNEL_SQL_DSN", "")
+			testUserID := setupChannelCreateTest(t)
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				calls.Add(1)
+				assert.Equal(t, http.MethodPost, request.Method)
+				assert.Equal(t, "/gateway/typesafe/v1/systemone", request.URL.Path)
+				assert.Equal(t, "Bearer fixture-secret", request.Header.Get("Authorization"))
+				var payload struct {
+					Model     string `json:"model"`
+					Questions map[string]struct {
+						Type string `json:"type"`
+					} `json:"questions"`
+				}
+				assert.NoError(t, common.DecodeJson(request.Body, &payload))
+				assert.Equal(t, "ateve-jev-v1", payload.Model)
+				assert.Equal(t, "noul", payload.Questions["probe"].Type)
+				writer.WriteHeader(test.status)
+				_, _ = io.WriteString(writer, test.response)
+			}))
+			defer upstream.Close()
+			baseURL := upstream.URL + "/gateway/typesafe"
+			binding := `{"task_plugin_key":"typesafe"}`
+			channel := &model.Channel{Type: constant.ChannelTypeTaskPlugin, Status: common.ChannelStatusEnabled, Models: "jev-latest", BaseURL: &baseURL,
+				ModelMapping: &modelMapping, Key: "fixture-secret", Setting: &binding}
+			require.NoError(t, model.DB.Create(channel).Error)
+			if test.automatic {
+				selected := selectChannelsForAutomaticTest([]*model.Channel{channel}, operation_setting.ChannelTestModeScheduledAll)
+				require.Len(t, selected, 1)
+				summary := testChannelForHealthCheck(context.Background(), selected[0], testUserID, false, 60000)
+				assert.Equal(t, 1, summary.Tested)
+				assert.Equal(t, test.wantErr == "", summary.Succeeded == 1)
+				assert.Equal(t, test.wantErr != "", summary.Failed == 1)
+			} else {
+				recorder := httptest.NewRecorder()
+				endpoint := gin.New()
+				endpoint.GET("/api/channel/test/:id", TestChannel)
+				endpoint.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/channel/test/%d?model=%s", channel.Id, test.model), nil))
+				var result struct {
+					Success bool   `json:"success"`
+					Message string `json:"message"`
+				}
+				require.Equal(t, http.StatusOK, recorder.Code)
+				require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
+				require.Equal(t, test.wantErr == "", result.Success, result.Message)
+				assert.Equal(t, test.wantErr, result.Message)
+			}
+			var records []model.Log
+			require.NoError(t, model.LOG_DB.Where("channel_id = ?", channel.Id).Find(&records).Error)
+			if test.wantErr == "" {
+				require.Eventually(t, func() bool {
+					stored, lookupErr := model.GetChannelById(channel.Id, false)
+					return lookupErr == nil && stored.TestTime > 0
+				}, time.Second, 10*time.Millisecond)
+				require.Len(t, records, 1)
+				assert.Equal(t, "Model test", records[0].TokenName)
+				assert.Equal(t, "jev-latest", records[0].ModelName)
+				assert.Equal(t, 108, records[0].PromptTokens)
+				assert.Equal(t, 2, records[0].Quota)
+			} else {
+				assert.Empty(t, records)
+			}
+			user, err := model.GetUserById(testUserID, false)
+			require.NoError(t, err)
+			assert.Zero(t, user.Quota)
+			assert.Zero(t, user.UsedQuota)
+			assert.Zero(t, user.RequestCount)
+			stored, err := model.GetChannelById(channel.Id, false)
+			require.NoError(t, err)
+			assert.Zero(t, stored.UsedQuota)
+			if test.status == 0 {
+				assert.Zero(t, calls.Load())
+			} else {
+				assert.EqualValues(t, 1, calls.Load())
+			}
+		})
+	}
+}
 
 func TestGetChannelDefaultBaseURLsUsesBuiltInDefaults(t *testing.T) {
 	originalBaseURLs := constant.ChannelBaseURLs

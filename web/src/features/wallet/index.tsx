@@ -25,13 +25,13 @@ import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
+import { AlipayCheckoutCard } from './components/alipay-checkout-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
 import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
-import { AlipayCheckoutCard } from './components/alipay-checkout-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
 import { DEFAULT_DISCOUNT_RATE, PAYMENT_TYPES } from './constants'
 import {
@@ -293,7 +293,13 @@ export function Wallet(props: WalletProps) {
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
 
-            {alipayCheckout && <AlipayCheckoutCard order={alipayCheckout} onPaid={fetchUser} onClose={() => setAlipayCheckout(null)} />}
+            {alipayCheckout && (
+              <AlipayCheckoutCard
+                order={alipayCheckout}
+                onPaid={fetchUser}
+                onClose={() => setAlipayCheckout(null)}
+              />
+            )}
             <div
               className={[
                 alipayCheckout ? 'hidden' : 'grid gap-4',
@@ -337,7 +343,6 @@ export function Wallet(props: WalletProps) {
               </div>
 
               <SubscriptionPlansCard
-                topupInfo={topupInfo}
                 onAvailabilityChange={handleSubscriptionAvailabilityChange}
                 userQuota={user?.quota}
                 onPurchaseSuccess={fetchUser}

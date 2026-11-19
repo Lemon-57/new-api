@@ -15,7 +15,15 @@ import (
 // ---- Shared types ----
 
 type SubscriptionPlanDTO struct {
-	Plan model.SubscriptionPlan `json:"plan"`
+	Plan    model.SubscriptionPlan      `json:"plan"`
+	Payment *subscriptionPaymentMethods `json:"payment,omitempty"`
+}
+
+type subscriptionPaymentMethods struct {
+	Stripe       bool                `json:"stripe"`
+	Creem        bool                `json:"creem"`
+	WaffoPancake bool                `json:"waffo_pancake"`
+	Epay         []map[string]string `json:"epay"`
 }
 
 type BillingPreferenceRequest struct {
@@ -40,10 +48,31 @@ func GetSubscriptionPlans(c *gin.Context) {
 		return
 	}
 	result := make([]SubscriptionPlanDTO, 0, len(plans))
-	for _, p := range plans {
-		p.NormalizeDefaults()
+	methods := subscriptionPaymentMethods{
+		Stripe:       isStripeWebhookEnabled(),
+		Creem:        isCreemTopUpEnabled(),
+		WaffoPancake: isWaffoPancakeWebhookEnabled(),
+		Epay:         []map[string]string{},
+	}
+	if GetEpayClient() != nil {
+		for _, method := range operation_setting.PayMethods {
+			if isSubscriptionEpayMethod(method["type"]) {
+				methods.Epay = append(methods.Epay, map[string]string{"type": method["type"], "name": method["name"]})
+			}
+		}
+	}
+	for _, plan := range plans {
+		plan.NormalizeDefaults()
+		payment := methods
+		payment.Stripe = payment.Stripe && plan.StripePriceId != ""
+		payment.Creem = payment.Creem && plan.CreemProductId != ""
+		payment.WaffoPancake = payment.WaffoPancake && strings.TrimSpace(plan.WaffoPancakeProductId) != ""
+		if plan.PriceAmount < 0.01 {
+			payment.Epay = []map[string]string{}
+		}
 		result = append(result, SubscriptionPlanDTO{
-			Plan: p,
+			Plan:    plan,
+			Payment: &payment,
 		})
 	}
 	common.ApiSuccess(c, result)

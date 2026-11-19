@@ -1,0 +1,14 @@
+# Direct Alipay wallet recharge
+
+- Under **Billing → Alipay**, set the application ID, Alipay RSA public key, merchant RSA private key, async notification URL and return URL. The private key is write-only; leaving it empty preserves the stored key. URL fields can be cleared to restore the server defaults. At the Alipay side, use ordinary RSA public-key mode, not certificate mode.
+- Under **Billing → Payment Gateway**, enable the `alipay` payment method and keep payment compliance confirmed. This integration is for wallet top-ups, not subscriptions. A subscription can display an Epay `alipay` method only if Epay itself is configured.
+- Keep all previously configured async callback URLs serving `/api/user/alipay/notify` until their orders are reconciled. Changing the merchant configuration does not move pending orders to the new merchant. The verifier registry stores historical application IDs and provider **public** keys, never historical private keys. Do not clear it during an option restore or rollback. Preserve the existing payment provider, order numbers and statuses; do not replay credits or infer payment from a pending order.
+- The wallet renders the provider QR then polls the authenticated user's exact order. The `url` response field still identifies the inline protocol for older assets; submitting that URL as a form is retired and returns HTTP 410 to authenticated users.
+
+## Release gate
+
+Verify the two production origins separately: active receiver and payment upstreams, embedded wallet assets, root-only Alipay settings API and UI, authenticated wallet methods, subscription methods, legacy checkout retirement, and the unauthenticated signed notify route. Keep old frontend assets available for open browser sessions. Never test settlement against production by making an unsolicited order. In isolated databases, verify a signed callback, rejection of a different merchant/signature/amount, duplicate idempotency, and an old pending order completing after rotation.
+
+## Rollback
+
+Keep the previous receiver available until connections naturally drain. Roll back frontend or general ingress routes independently of the wallet and callback. Keep `/api/user/alipay/notify`, `/api/user/alipay/checkout`, and the Alipay settings write guard on a verified version that understands the stored verifier registry; **never** route callbacks to a build that lacks direct Alipay support. A pre-registry Alipay build can accept callbacks for its configured merchant only. It is not a full callback fallback once the active app ID or signing public key has changed. Before restoring an older payment process, check the configuration and pending-order compatibility, and do not overwrite options or restore an old database snapshot to revert application code. Exercise both routing directions with synthetic pending orders before switching live traffic.

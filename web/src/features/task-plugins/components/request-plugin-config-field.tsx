@@ -227,6 +227,7 @@ export function RequestPluginConfigField(props: RequestPluginConfigFieldProps) {
       inputMode='decimal'
       min={field.minimum}
       max={field.maximum}
+      step={field.type === 'number' ? 'any' : undefined}
       value={text}
       disabled={props.disabled}
       placeholder={exampleText}

@@ -1,13 +1,10 @@
 package controller
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
+	"crypto/rand"
 	"errors"
 	"fmt"
-	"html/template"
-	"image/png"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,48 +17,60 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
-	"github.com/boombuler/barcode"
-	"github.com/boombuler/barcode/qr"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"github.com/smartwalle/alipay/v3"
 )
 
-const alipayOrderTTL = 15 * time.Minute
-
-func directAlipayConfigured() bool {
-	return strings.TrimSpace(operation_setting.AlipayAppID) != "" &&
-		strings.TrimSpace(operation_setting.AlipayPrivateKey) != "" &&
-		strings.TrimSpace(operation_setting.AlipayPublicKey) != ""
+type directAlipaySettings struct {
+	appID      string
+	privateKey string
+	publicKey  string
+	notifyURL  string
+	returnURL  string
 }
 
-func getDirectAlipayClient() (*alipay.Client, error) {
-	if !directAlipayConfigured() {
+func directAlipaySettingsFromOptions(options map[string]string) directAlipaySettings {
+	return directAlipaySettings{
+		appID:      strings.TrimSpace(options["AlipayAppID"]),
+		privateKey: strings.TrimSpace(options["AlipayPrivateKey"]),
+		publicKey:  strings.TrimSpace(options["AlipayPublicKey"]),
+		notifyURL:  strings.TrimSpace(options["AlipayNotifyURL"]),
+		returnURL:  strings.TrimSpace(options["AlipayReturnURL"]),
+	}
+}
+
+func (settings directAlipaySettings) verifier() alipayVerifier {
+	return alipayVerifier{AppID: settings.appID, PublicKey: settings.publicKey}
+}
+
+func (settings directAlipaySettings) configured() bool {
+	return settings.appID != "" && settings.privateKey != "" && settings.publicKey != ""
+}
+
+func isDirectAlipayTopUpEnabled() bool {
+	if model.DB == nil || !isPaymentComplianceConfirmed() || !operation_setting.ContainsPayMethod("alipay") {
+		return false
+	}
+	options, err := model.GetDirectAlipayOptions()
+	return err == nil && directAlipaySettingsFromOptions(options).configured()
+}
+
+func (settings directAlipaySettings) client() (*alipay.Client, error) {
+	if !settings.configured() {
 		return nil, fmt.Errorf("direct Alipay is not configured")
 	}
-	client, err := alipay.New(operation_setting.AlipayAppID, operation_setting.AlipayPrivateKey, true)
+	client, err := alipay.New(settings.appID, settings.privateKey, true)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Alipay client: %w", err)
 	}
-	if err := client.LoadAliPayPublicKey(operation_setting.AlipayPublicKey); err != nil {
+	if err := client.LoadAliPayPublicKey(settings.publicKey); err != nil {
 		return nil, fmt.Errorf("load Alipay public key: %w", err)
 	}
 	return client, nil
 }
 
-// RequestAlipay creates a native Alipay face-to-face precreate order. The
-// browser is sent to an in-process checkout page that renders the QR code;
-// payment confirmation still arrives only through the verified callback.
-func RequestAlipay(c *gin.Context) {
-	var req EpayRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		paymentError(c, common.NewMessage("Invalid parameters"))
-		return
-	}
-	requestAlipay(c, req)
-}
-
-func requestAlipay(c *gin.Context, req EpayRequest) {
+func requestAlipay(c *gin.Context, req EpayRequest, settings directAlipaySettings) {
 	if req.Amount < getMinTopup() {
 		paymentError(c, common.NewMessage("Top-up amount cannot be less than {{min}}", map[string]any{"min": getMinTopup()}))
 		return
@@ -80,18 +89,18 @@ func requestAlipay(c *gin.Context, req EpayRequest) {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return
 	}
-	client, err := getDirectAlipayClient()
+	client, err := settings.client()
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("direct Alipay is unavailable: %q", err.Error()))
 		paymentError(c, common.NewMessage("Payment information has not been configured by administrator"))
 		return
 	}
-	tradeNo := fmt.Sprintf("ALIPAYUSR%d%s%d", id, common.GetRandomString(6), time.Now().Unix())
-	callback := operation_setting.AlipayNotifyURL
+	tradeNo := "ALIPAYUSR" + rand.Text()[:20] + "_" + settings.verifier().id()
+	callback := settings.notifyURL
 	if strings.TrimSpace(callback) == "" {
 		callback = service.GetCallbackAddress() + "/api/user/alipay/notify"
 	}
-	returnURL := operation_setting.AlipayReturnURL
+	returnURL := settings.returnURL
 	if strings.TrimSpace(returnURL) == "" {
 		returnURL = service.GetCallbackAddress() + paymentReturnPath("/usage-logs")
 	}
@@ -116,58 +125,15 @@ func requestAlipay(c *gin.Context, req EpayRequest) {
 		paymentError(c, common.NewMessage("Failed to create order"))
 		return
 	}
-	// The frontend's existing form submitter posts the returned fields to this
-	// route, so no frontend payment protocol change is needed.
 	c.JSON(http.StatusOK, gin.H{"message": "success", "data": gin.H{"trade_no": tradeNo, "qr_code": response.QRCode, "amount": fmt.Sprintf("%.2f", payMoney), "return_url": returnURL}, "url": "/api/user/alipay/checkout"})
 }
 
 func AlipayCheckout(c *gin.Context) {
-	if !directAlipayConfigured() {
-		http.Error(c.Writer, "payment unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	_ = c.Request.ParseForm()
-	tradeNo := strings.TrimSpace(c.Request.Form.Get("trade_no"))
-	code := strings.TrimSpace(c.Request.Form.Get("qr_code"))
-	if tradeNo == "" || code == "" {
-		http.Error(c.Writer, "invalid checkout", http.StatusBadRequest)
-		return
-	}
-	order := model.GetTopUpByTradeNo(tradeNo)
-	if order == nil || order.PaymentProvider != model.PaymentProviderAlipay || order.Status != common.TopUpStatusPending || time.Now().Unix()-order.CreateTime > int64(alipayOrderTTL/time.Second) {
-		http.Error(c.Writer, "payment order expired or unavailable", http.StatusGone)
-		return
-	}
-	encoded, err := qr.Encode(code, qr.M, qr.Auto)
-	if err != nil {
-		http.Error(c.Writer, "QR unavailable", http.StatusInternalServerError)
-		return
-	}
-	scaled, err := barcode.Scale(encoded, 256, 256)
-	if err != nil {
-		http.Error(c.Writer, "QR unavailable", http.StatusInternalServerError)
-		return
-	}
-	var image bytes.Buffer
-	if err := png.Encode(&image, scaled); err != nil {
-		http.Error(c.Writer, "QR unavailable", http.StatusInternalServerError)
-		return
-	}
-	returnURL := strings.TrimSpace(c.Request.Form.Get("return_url"))
-	if returnURL == "" {
-		returnURL = paymentReturnPath("/usage-logs")
-	}
-	page := template.Must(template.New("alipay-checkout").Parse(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>支付宝付款</title><style>body{font:18px sans-serif;max-width:420px;margin:3rem auto;text-align:center;padding:1rem}img{max-width:100%}</style><h1>支付宝扫码付款</h1><p>金额：¥{{.Amount}}</p><img alt="支付宝付款二维码" src="data:image/png;base64,{{.QR}}"><p>请核对金额，使用支付宝扫描二维码。支付完成后返回账户查看到账记录。</p><a href="{{.Return}}">返回账户</a></html>`))
 	c.Header("Cache-Control", "no-store")
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	_ = page.Execute(c.Writer, struct{ Amount, QR, Return string }{Amount: fmt.Sprintf("%.2f", order.Money), QR: base64.StdEncoding.EncodeToString(image.Bytes()), Return: returnURL})
+	common.ApiErrorStatus(c, http.StatusGone, common.NewMessage("Open the wallet to pay with Alipay."))
 }
 
 func AlipayNotify(c *gin.Context) {
-	if !directAlipayConfigured() {
-		_, _ = io.WriteString(c.Writer, "fail")
-		return
-	}
 	var values url.Values
 	if c.Request.Method == http.MethodPost {
 		if err := c.Request.ParseForm(); err != nil {
@@ -177,6 +143,12 @@ func AlipayNotify(c *gin.Context) {
 		values = c.Request.PostForm
 	} else {
 		values = c.Request.URL.Query()
+	}
+	for _, entries := range values {
+		if len(entries) != 1 {
+			_, _ = io.WriteString(c.Writer, "fail")
+			return
+		}
 	}
 	tradeNo := strings.TrimSpace(values.Get("out_trade_no"))
 	if tradeNo == "" {
@@ -188,19 +160,38 @@ func AlipayNotify(c *gin.Context) {
 		_, _ = io.WriteString(c.Writer, "fail")
 		return
 	}
-	client, err := getDirectAlipayClient()
+	options, err := model.GetDirectAlipayOptions()
 	if err != nil {
 		_, _ = io.WriteString(c.Writer, "fail")
 		return
 	}
+	verifier, err := alipayVerifierForOrder(options, tradeNo)
+	if err != nil || values.Get("app_id") != verifier.AppID {
+		_, _ = io.WriteString(c.Writer, "fail")
+		return
+	}
+	client, err := verifier.decoder()
+	if err != nil {
+		_, _ = io.WriteString(c.Writer, "fail")
+		return
+	}
+	values.Del("alipay_cert_sn")
 	notification, err := client.DecodeNotification(c.Request.Context(), values)
-	if err != nil || notification == nil || notification.AppId != operation_setting.AlipayAppID || notification.OutTradeNo != order.TradeNo || notification.TradeNo == "" || (notification.TradeStatus != alipay.TradeStatusSuccess && notification.TradeStatus != alipay.TradeStatusFinished) {
+	if err != nil {
+		current := directAlipaySettingsFromOptions(options).verifier()
+		if current.AppID == verifier.AppID && current.PublicKey != verifier.PublicKey {
+			if decoder, initErr := current.decoder(); initErr == nil {
+				notification, err = decoder.DecodeNotification(c.Request.Context(), values)
+			}
+		}
+	}
+	if err != nil || notification == nil || notification.AppId != verifier.AppID || notification.OutTradeNo != order.TradeNo || notification.TradeNo == "" || (notification.TradeStatus != alipay.TradeStatusSuccess && notification.TradeStatus != alipay.TradeStatusFinished) {
 		_, _ = io.WriteString(c.Writer, "fail")
 		return
 	}
 	actual, err := decimal.NewFromString(notification.TotalAmount)
 	expected := decimal.NewFromFloat(order.Money).Round(2)
-	if err != nil || actual.Round(2).Cmp(expected) != 0 {
+	if err != nil || actual.Cmp(expected) != 0 {
 		_, _ = io.WriteString(c.Writer, "fail")
 		return
 	}
@@ -215,4 +206,3 @@ func AlipayNotify(c *gin.Context) {
 	}
 	_, _ = io.WriteString(c.Writer, "success")
 }
-

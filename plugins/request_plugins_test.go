@@ -729,6 +729,31 @@ func TestContentModerationTypeSafe(t *testing.T) {
 		"url": "https://openai.example.invalid/v1/moderations", "apiKey": "openai-fixture", "model": "openai-fixture-model",
 		"typeSafeApiKey": "typesafe-fixture", "typeSafeModel": "jev-test", "typeSafeCategories": []string{"violence"},
 	}
+	t.Run("lists all default thresholds without setting overrides", func(t *testing.T) {
+		plugin, found := jsplugin.DefaultRegistry.Generation().Get("content-moderation")
+		require.True(t, found)
+		field := gjson.GetBytes(plugin.Meta.ConfigSchemaJSON(), "properties.typeSafeThresholds")
+		assert.JSONEq(t, `[
+			{"category":"harassment","threshold":0.98},
+			{"category":"harassment/threatening","threshold":0.90},
+			{"category":"hate","threshold":0.65},
+			{"category":"hate/threatening","threshold":0.65},
+			{"category":"illicit","threshold":0.95},
+			{"category":"illicit/violent","threshold":0.95},
+			{"category":"self-harm","threshold":0.65},
+			{"category":"self-harm/intent","threshold":0.85},
+			{"category":"self-harm/instructions","threshold":0.65},
+			{"category":"sexual","threshold":0.65},
+			{"category":"sexual/minors","threshold":0.65},
+			{"category":"violence","threshold":0.95},
+			{"category":"violence/graphic","threshold":0.95}
+		]`, field.Get("examples.0").Raw)
+		raw, err := common.Marshal(config)
+		require.NoError(t, err)
+		validated, err := plugin.ValidateConfig(raw)
+		require.NoError(t, err)
+		assert.JSONEq(t, `[]`, gjson.GetBytes(validated, "typeSafeThresholds").Raw)
+	})
 	t.Run("uses its own credentials and sends only scoped text", func(t *testing.T) {
 		result, calls, err := runModeration(t, config, "openai", path, chat, http.StatusOK, resultBody)
 		require.NoError(t, err)

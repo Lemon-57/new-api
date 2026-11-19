@@ -34,6 +34,7 @@ import type { RequestPluginConfigSchema } from '../types'
 import { RequestPluginConfigField } from './request-plugin-config-field'
 import { RequestPluginConfigModelValues } from './request-plugin-config-model-values'
 import { RequestPluginConfigRows } from './request-plugin-config-rows'
+import { TypeSafeThresholdFields } from './typesafe-threshold-fields'
 
 type RequestPluginConfigFormProps = {
   pluginKey: string
@@ -97,8 +98,13 @@ export function RequestPluginConfigForm(props: RequestPluginConfigFormProps) {
           )
         }
         if (kind === 'rows') {
+          const Rows =
+            props.pluginKey === 'content-moderation' &&
+            name === 'typeSafeThresholds'
+              ? TypeSafeThresholdFields
+              : RequestPluginConfigRows
           return (
-            <RequestPluginConfigRows
+            <Rows
               key={name}
               className='px-4 py-3.5'
               id={id}

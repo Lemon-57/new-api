@@ -201,15 +201,26 @@ func ApplyOriginTaskAffinity(c *gin.Context, info *relaycommon.RelayInfo) *dto.T
 // 构建/发送/解析上游请求 → 提交后计费调整(AdjustBillingOnSubmit)。
 // 共享控制器编排负责未落库退款、最终额度预留、落库和结算。
 func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
+	return relayTaskSubmit(c, info, false)
+}
+
+func ProbeTaskChannel(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
+	info.IsChannelTest = true
+	return relayTaskSubmit(c, info, true)
+}
+
+func relayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo, channelTest bool) (*TaskSubmitResult, *dto.TaskError) {
 	info.InitChannelMeta(c)
 
 	// The attempt's late request plugins see the client body before it is
 	// validated and priced; a changed body is decoded again.
-	if changed, apiErr := requestplugin.TaskAttempt(c, info); apiErr != nil {
-		return nil, requestplugin.TaskError(apiErr)
-	} else if changed {
-		if taskErr := middleware.RefreshTaskPluginRequest(c); taskErr != nil {
-			return nil, taskErr
+	if !channelTest {
+		if changed, apiErr := requestplugin.TaskAttempt(c, info); apiErr != nil {
+			return nil, requestplugin.TaskError(apiErr)
+		} else if changed {
+			if taskErr := middleware.RefreshTaskPluginRequest(c); taskErr != nil {
+				return nil, taskErr
+			}
 		}
 	}
 
@@ -359,7 +370,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 
 	// 7. 预扣费：首次尝试创建计费会话；重试时会话已存在，换到更贵的渠道要在
 	//    发起上游请求前补足预扣，余额不足就不发请求。
-	if info.Billing != nil || !info.PriceData.FreeModel {
+	if !channelTest && (info.Billing != nil || !info.PriceData.FreeModel) {
 		info.ForcePreConsume = true
 		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
 			return nil, service.TaskErrorFromAPIError(apiErr)
@@ -373,9 +384,12 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 	// The egress request plugins check the body the attempt sends; the
 	// reservation of a stopped attempt is refunded.
-	requestBody, apiErr := requestplugin.TaskEgress(c, info, requestBody)
-	if apiErr != nil {
-		return nil, requestplugin.TaskError(apiErr)
+	if !channelTest {
+		checkedBody, apiErr := requestplugin.TaskEgress(c, info, requestBody)
+		if apiErr != nil {
+			return nil, requestplugin.TaskError(apiErr)
+		}
+		requestBody = checkedBody
 	}
 
 	// 9. 发送请求
@@ -390,6 +404,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// Any 2xx is a successful submission: task APIs commonly answer 201 Created
 	// or 202 Accepted, and parseSubmitResponse receives the exact status code.
 	if resp.StatusCode/100 != 2 {
+		if channelTest {
+			return nil, service.TaskErrorWrapper(fmt.Errorf("HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode)), "fail_to_fetch_task", resp.StatusCode, common.UpstreamAddresses(c)...)
+		}
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode, common.UpstreamAddresses(c)...)
 	}

@@ -129,6 +129,22 @@ const filterPlugin: TaskPluginOption = {
   },
 }
 
+const typeSafeDefaults = [
+  { category: 'harassment', threshold: 0.98 },
+  { category: 'harassment/threatening', threshold: 0.9 },
+  { category: 'hate', threshold: 0.65 },
+  { category: 'hate/threatening', threshold: 0.65 },
+  { category: 'illicit', threshold: 0.95 },
+  { category: 'illicit/violent', threshold: 0.95 },
+  { category: 'self-harm', threshold: 0.65 },
+  { category: 'self-harm/intent', threshold: 0.85 },
+  { category: 'self-harm/instructions', threshold: 0.65 },
+  { category: 'sexual', threshold: 0.65 },
+  { category: 'sexual/minors', threshold: 0.65 },
+  { category: 'violence', threshold: 0.95 },
+  { category: 'violence/graphic', threshold: 0.95 },
+]
+
 const moderationPlugin: TaskPluginOption = {
   key: 'content-moderation',
   name: 'Content moderation',
@@ -147,6 +163,41 @@ const moderationPlugin: TaskPluginOption = {
         default: 'https://api.openai.com/v1/moderations',
       },
       apiKey: { type: 'string', title: 'API key', format: 'password' },
+      engine: {
+        type: 'string',
+        title: 'Moderation engine',
+        enum: ['openai', 'typesafe'],
+        enumTitles: ['OpenAI', 'TypeSafe'],
+        default: 'openai',
+      },
+      typeSafeThresholds: {
+        type: 'array',
+        title: 'TypeSafe risk thresholds',
+        default: [],
+        examples: [typeSafeDefaults],
+        visibleWhen: { engine: ['typesafe'] },
+        items: {
+          type: 'object',
+          title: 'Category threshold',
+          required: ['category', 'threshold'],
+          properties: {
+            category: {
+              type: 'string',
+              title: 'Category',
+              enum: typeSafeDefaults.map(({ category }) => category),
+              enumTitles: typeSafeDefaults.map(({ category }) =>
+                category === 'harassment' ? 'Harassment' : category
+              ),
+            },
+            threshold: {
+              type: 'number',
+              title: 'Threshold',
+              minimum: 0,
+              maximum: 1,
+            },
+          },
+        },
+      },
     },
   },
 }
@@ -278,6 +329,80 @@ test('an out-of-range number shows its error while typing and blocks the save', 
   expect(maxSide).toHaveAttribute('aria-invalid', 'true')
   await user.click(within(dialog).getByRole('button', { name: 'Save' }))
   expect(onSave).not.toHaveBeenCalled()
+})
+
+test('TypeSafe shows every default as an editable field and only saves changes', async () => {
+  const { user, dialog, onSave } = await openEditor('Content moderation')
+  expect(within(dialog).queryByRole('spinbutton')).toBeNull()
+
+  await user.click(
+    within(dialog).getByRole('combobox', { name: 'Moderation engine' })
+  )
+  await user.click(await screen.findByRole('option', { name: 'TypeSafe' }))
+  const thresholds = within(dialog).getByRole('group', {
+    name: 'TypeSafe risk thresholds',
+  })
+  const fields = within(thresholds).getAllByRole('spinbutton')
+  expect(
+    fields.map((field) => (field as HTMLInputElement).valueAsNumber)
+  ).toEqual(typeSafeDefaults.map(({ threshold }) => threshold))
+  expect(within(thresholds).queryByRole('combobox')).toBeNull()
+
+  const harassment = within(thresholds).getByRole('spinbutton', {
+    name: 'Harassment',
+  })
+  fireEvent.change(harassment, { target: { value: '1.1' } })
+  expect(harassment).toHaveAttribute('aria-invalid', 'true')
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+  expect(onSave).not.toHaveBeenCalled()
+
+  fireEvent.change(harassment, { target: { value: '0.8' } })
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+  expect(onSave.mock.calls[0][0].config.typeSafeThresholds).toEqual([
+    { category: 'harassment', threshold: 0.8 },
+  ])
+})
+
+test('TypeSafe shows a saved threshold of zero and resetting it restores the default', async () => {
+  const user = userEvent.setup()
+  const onSave = vi.fn<(instance: RequestPluginInstance) => void>()
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <RequestPluginInstanceEditor
+        open
+        instance={{
+          id: 'rp_test',
+          name: 'Content moderation',
+          plugin: 'content-moderation',
+          enabled: true,
+          global: true,
+          groups: [],
+          models: [],
+          config: {
+            engine: 'typesafe',
+            url: 'https://api.openai.com/v1/moderations',
+            typeSafeThresholds: [{ category: 'harassment', threshold: 0 }],
+          },
+        }}
+        plugins={[moderationPlugin]}
+        instanceCounts={{}}
+        groups={[]}
+        models={[]}
+        saving={false}
+        onOpenChange={() => {}}
+        onSave={onSave}
+      />
+    </QueryClientProvider>
+  )
+  const harassment = screen.getByRole('spinbutton', { name: 'Harassment' })
+  expect(harassment).toHaveValue(0)
+
+  await user.click(
+    screen.getByRole('button', { name: 'Reset to default: Harassment' })
+  )
+  expect(harassment).toHaveValue(0.98)
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  expect(onSave.mock.calls[0][0].config.typeSafeThresholds).toEqual([])
 })
 
 test('rules are edited one row each and saved in the order shown', async () => {

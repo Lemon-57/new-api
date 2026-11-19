@@ -64,7 +64,7 @@ export const meta = {
     en: "Checks content with OpenAI Moderations or TypeSafe AI (Jev) and rejects flagged requests",
     zh: "使用 OpenAI 审核或 TypeSafe AI（Jev）检查内容，拒绝被标记的请求",
   },
-  version: "1.1.0-dual.1",
+  version: "1.1.0-dual.3",
   author: { name: "QuantumNous" },
   configSchema: {
     type: "object",
@@ -177,12 +177,13 @@ export const meta = {
       },
       typeSafeThresholds: {
         type: "array",
-        title: { en: "TypeSafe threshold overrides", zh: "TypeSafe 风险阈值覆盖" },
+        title: { en: "TypeSafe risk thresholds", zh: "TypeSafe 风险阈值" },
         description: {
-          en: "Block at or above the threshold. Unlisted categories use their defaults; test with your own samples before turning on blocking.",
-          zh: "分数达到阈值时拦截；未列出的类别使用默认值，启用前请用自己的样例验证。",
+          en: "Block at or above the threshold for each selected category; test with your own samples before enabling",
+          zh: "所选类别的分数达到阈值时拦截，启用前请用自己的样例验证",
         },
         default: [],
+        examples: [CATEGORIES.map((category) => ({ category, threshold: TYPESAFE_RULES[category][0] }))],
         maxItems: CATEGORIES.length,
         visibleWhen: { engine: "typesafe" },
         items: {

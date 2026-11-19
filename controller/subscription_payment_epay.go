@@ -21,6 +21,15 @@ type SubscriptionEpayPayRequest struct {
 	PaymentMethod string `json:"payment_method"`
 }
 
+func isSubscriptionEpayMethod(method string) bool {
+	switch method {
+	case "", model.PaymentMethodStripe, model.PaymentMethodCreem, model.PaymentMethodWaffo, model.PaymentMethodWaffoPancake:
+		return false
+	default:
+		return true
+	}
+}
+
 func SubscriptionRequestEpay(c *gin.Context) {
 	if !requirePaymentCompliance(c) {
 		return
@@ -29,6 +38,15 @@ func SubscriptionRequestEpay(c *gin.Context) {
 	var req SubscriptionEpayPayRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
 		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if !isSubscriptionEpayMethod(req.PaymentMethod) || !operation_setting.ContainsPayMethod(req.PaymentMethod) {
+		common.ApiErrorT(c, "Payment method does not exist")
+		return
+	}
+	client := GetEpayClient()
+	if client == nil {
+		common.ApiErrorT(c, "Payment information has not been configured by administrator")
 		return
 	}
 
@@ -45,11 +63,6 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		common.ApiErrorT(c, "Plan amount is too low")
 		return
 	}
-	if !operation_setting.ContainsPayMethod(req.PaymentMethod) {
-		common.ApiErrorT(c, "Payment method does not exist")
-		return
-	}
-
 	userId := c.GetInt("id")
 	if plan.MaxPurchasePerUser > 0 {
 		count, err := model.CountUserSubscriptionsByPlan(userId, plan.Id)
@@ -77,12 +90,6 @@ func SubscriptionRequestEpay(c *gin.Context) {
 
 	tradeNo := fmt.Sprintf("%s%d", common.GetRandomString(6), time.Now().Unix())
 	tradeNo = fmt.Sprintf("SUBUSR%dNO%s", userId, tradeNo)
-
-	client := GetEpayClient()
-	if client == nil {
-		common.ApiErrorT(c, "Payment information has not been configured by administrator")
-		return
-	}
 
 	order := &model.SubscriptionOrder{
 		UserId:          userId,

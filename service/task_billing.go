@@ -47,6 +47,43 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, task *model
 			logContent = append(logContent, common.NewMessage("Billing parameters: {{params}}", map[string]any{"params": strings.Join(contents, ", ")}))
 		}
 	}
+	other := taskConsumptionLogOther(c, info, task)
+	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
+		ChannelId: info.ChannelId,
+		ModelName: info.OriginModelName,
+		TokenName: tokenName,
+		Quota:     info.PriceData.Quota,
+		Content:   logContent,
+		TokenId:   info.TokenId,
+		Group:     info.UsingGroup,
+		Other:     other,
+	})
+	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, info.PriceData.Quota)
+	model.UpdateChannelUsedQuota(info.ChannelId, info.PriceData.Quota)
+}
+
+func LogTaskChannelTest(c *gin.Context, info *relaycommon.RelayInfo, immediate *relaycommon.TaskInfo, seconds int) {
+	other := taskConsumptionLogOther(c, info, nil)
+	var promptTokens int
+	if immediate != nil {
+		if inputTokens, ok := immediate.UsageFacts["input_tokens"].(float64); ok {
+			promptTokens = common.QuotaFromFloat(inputTokens)
+		}
+	}
+	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
+		ChannelId:      info.ChannelId,
+		PromptTokens:   promptTokens,
+		ModelName:      info.OriginModelName,
+		TokenName:      "Model test",
+		Quota:          info.PriceData.Quota,
+		Content:        []*common.Message{common.NewMessage("Model test")},
+		UseTimeSeconds: seconds,
+		Group:          info.UsingGroup,
+		Other:          other,
+	})
+}
+
+func taskConsumptionLogOther(c *gin.Context, info *relaycommon.RelayInfo, task *model.Task) *model.LogOther {
 	other := model.NewLogOther()
 	other.SetPublic("is_task", true)
 	other.SetPublic("request_path", c.Request.URL.Path)
@@ -90,18 +127,7 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, task *model
 		other.SetAdmin("request_plugins", info.RequestPluginSteps)
 	}
 	appendRequestPluginRecord(info, other)
-	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
-		ChannelId: info.ChannelId,
-		ModelName: info.OriginModelName,
-		TokenName: tokenName,
-		Quota:     info.PriceData.Quota,
-		Content:   logContent,
-		TokenId:   info.TokenId,
-		Group:     info.UsingGroup,
-		Other:     other,
-	})
-	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, info.PriceData.Quota)
-	model.UpdateChannelUsedQuota(info.ChannelId, info.PriceData.Quota)
+	return other
 }
 
 // ---------------------------------------------------------------------------

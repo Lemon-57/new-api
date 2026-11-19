@@ -25,11 +25,20 @@ import (
 
 func GetTopUpInfo(c *gin.Context) {
 	complianceConfirmed := operation_setting.IsPaymentComplianceConfirmed()
+	epayEnabled := isEpayTopUpEnabled()
+	directAlipayEnabled := isDirectAlipayTopUpEnabled()
 
 	// 获取支付方式
 	payMethods := operation_setting.PayMethods
 	if !complianceConfirmed {
 		payMethods = []map[string]string{}
+	} else if directAlipayEnabled && !epayEnabled {
+		payMethods = nil
+		for _, method := range operation_setting.PayMethods {
+			if method["type"] == "alipay" {
+				payMethods = append(payMethods, method)
+			}
+		}
 	}
 
 	// 如果启用了 Stripe 支付，添加到支付方法列表
@@ -98,7 +107,7 @@ func GetTopUpInfo(c *gin.Context) {
 	}
 
 	data := gin.H{
-		"enable_online_topup":              isEpayTopUpEnabled(),
+		"enable_online_topup":              epayEnabled || directAlipayEnabled,
 		"enable_stripe_topup":              isStripeTopUpEnabled(),
 		"enable_creem_topup":               isCreemTopUpEnabled(),
 		"enable_waffo_topup":               enableWaffo,
@@ -294,6 +303,21 @@ func RequestEpay(c *gin.Context) {
 	if err != nil {
 		paymentError(c, common.NewMessage("Invalid parameters"))
 		return
+	}
+	if !requirePaymentCompliance(c) {
+		return
+	}
+	if req.PaymentMethod == "alipay" && operation_setting.ContainsPayMethod("alipay") {
+		options, err := model.GetDirectAlipayOptions()
+		if err != nil {
+			paymentError(c, common.NewMessage("Please try again later."))
+			return
+		}
+		settings := directAlipaySettingsFromOptions(options)
+		if settings.configured() {
+			requestAlipay(c, req, settings)
+			return
+		}
 	}
 	if req.Amount < getMinTopup() {
 		paymentError(c, common.NewMessage("Top-up amount cannot be less than {{min}}", map[string]any{"min": getMinTopup()}))

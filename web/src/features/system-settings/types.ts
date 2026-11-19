@@ -309,11 +309,6 @@ export type BillingSettings = {
   PayAddress: string
   EpayId: string
   EpayKey: string
-  AlipayAppID: string
-  AlipayPrivateKey: string
-  AlipayPublicKey: string
-  AlipayNotifyURL: string
-  AlipayReturnURL: string
   Price: number
   MinTopUp: number
   CustomCallbackAddress: string
