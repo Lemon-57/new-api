@@ -26,7 +26,6 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -666,21 +665,42 @@ func TestEzpayCheckoutAndCallback(t *testing.T) {
 		assert.Equal(t, expected, order["sign"])
 	}
 
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
+	for _, engine := range []struct{ name, dsn string }{
+		{"sqlite", ""},
+		{"postgres", os.Getenv("EZPAY_TEST_POSTGRES_DSN")},
+		{"mysql", os.Getenv("EZPAY_TEST_MYSQL_DSN")},
+	} {
+		t.Run(engine.name, func(t *testing.T) {
+			if engine.name != "sqlite" && engine.dsn == "" {
+				t.Skip("isolated ezpay test database not configured")
+			}
+			oldDB, oldLogDB := model.DB, model.LOG_DB
+			oldMainKind, oldLogKind := common.MainDatabaseType(), common.LogDatabaseType()
+			oldRedis, oldCache, oldMaster, oldSQLite := common.RedisEnabled, common.MemoryCacheEnabled, common.IsMasterNode, common.SQLitePath
+			t.Cleanup(func() {
+				model.DB, model.LOG_DB = oldDB, oldLogDB
+				common.SetDatabaseTypes(oldMainKind, oldLogKind)
+				common.RedisEnabled, common.MemoryCacheEnabled, common.IsMasterNode, common.SQLitePath = oldRedis, oldCache, oldMaster, oldSQLite
+			})
+			t.Setenv("SQL_DSN", engine.dsn)
+			t.Setenv("LOG_SQL_DSN", "")
+			common.RedisEnabled, common.MemoryCacheEnabled, common.IsMasterNode = false, false, false
+			common.SQLitePath = filepath.Join(t.TempDir(), "ezpay.db")
+			require.NoError(t, model.InitDB())
+			require.NoError(t, model.InitLogDB())
+			for _, table := range []any{&model.User{}, &model.TopUp{}, &model.Log{}} {
+				require.False(t, model.DB.Migrator().HasTable(table), "ezpay tests require an empty database")
+			}
+			assertEzpaySettlement(t, model.DB, client, notifyURL.Path)
+		})
+	}
+}
+
+func assertEzpaySettlement(t *testing.T, db *gorm.DB, client *epay.Client, notifyPath string) {
+	t.Helper()
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
-	originalLogDB := model.LOG_DB
-	originalRedisEnabled := common.RedisEnabled
-	t.Cleanup(func() {
-		model.LOG_DB = originalLogDB
-		common.RedisEnabled = originalRedisEnabled
-		require.NoError(t, sqlDB.Close())
-	})
-	model.DB = db
-	model.LOG_DB = db
-	common.RedisEnabled = false
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}))
 	require.NoError(t, db.Create(&model.User{Id: 53, Username: "ezpay-user"}).Error)
 	for tradeNo, provider := range map[string]string{"ezpay-order": model.PaymentProviderEpay, "direct-order": model.PaymentProviderAlipay} {
@@ -690,7 +710,7 @@ func TestEzpayCheckoutAndCallback(t *testing.T) {
 		}).Error)
 	}
 	router := gin.New()
-	router.GET(notifyURL.Path, EpayNotify)
+	router.GET(notifyPath, EpayNotify)
 	for _, notification := range []struct{ tradeNo, currency, money, result string }{
 		{"direct-order", "CNY", "1.00", "fail"},
 		{"ezpay-order", "USD", "1.00", "fail"},
@@ -709,7 +729,7 @@ func TestEzpayCheckoutAndCallback(t *testing.T) {
 			query.Set(key, value)
 		}
 		response := httptest.NewRecorder()
-		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, notifyURL.Path+"?"+query.Encode(), nil))
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, notifyPath+"?"+query.Encode(), nil))
 		assert.Equal(t, notification.result, response.Body.String())
 	}
 	var user model.User
