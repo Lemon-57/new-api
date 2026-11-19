@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,6 +100,62 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 	return rootUser.Id, nil
 }
 
+func testSystemOneChannel(c *gin.Context, channel *model.Channel, plugin *jsplugin.LoadedPlugin, testModel string) testResult {
+	result := testResult{context: c}
+	if !slices.ContainsFunc(channel.GetModels(), func(configured string) bool {
+		return strings.TrimSpace(configured) == testModel
+	}) {
+		result.localErr = common.NewMessage("Model not found")
+		result.newAPIError = types.NewError(result.localErr, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+		return result
+	}
+	request := c.Request
+	ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
+	defer cancel()
+	defer func() { c.Request = request }()
+	c.Request = request.WithContext(ctx)
+	c.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Plugin: plugin, Generation: jsplugin.DefaultRegistry.Generation()})
+	c.Set("task_request", map[string]any{
+		"model": testModel,
+		"state": "This is a channel connectivity test.",
+		"questions": map[string]any{
+			"probe": map[string]any{"type": "noul", "instructions": "Is this a test?"},
+		},
+	})
+	info, err := relaycommon.GenRelayInfo(c, types.RelayFormatTask, nil, nil)
+	if err != nil {
+		result.localErr = err
+		result.newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed, types.ErrOptionWithSkipRetry())
+		return result
+	}
+	info.Action = "systemone"
+	started := time.Now()
+	submitted, taskErr := relay.ProbeTaskChannel(c, info)
+	if taskErr != nil {
+		if taskErr.LocalError || taskErr.Code == "model_price_error" {
+			result.localErr = common.NewMessage("Invalid request")
+			result.newAPIError = types.NewError(result.localErr, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+		} else {
+			result.localErr = common.NewMessage("Upstream request failed")
+			switch taskErr.Code {
+			case "plugin_submit_response_failed", "plugin_submit_response_invalid", "read_response_body_failed":
+				result.localErr = common.NewMessage("Invalid response")
+			case "fail_to_fetch_task":
+				result.localErr = fmt.Errorf("HTTP %d %s", taskErr.StatusCode, http.StatusText(taskErr.StatusCode))
+			}
+			result.newAPIError = types.NewOpenAIError(result.localErr, types.ErrorCodeBadResponse, taskErr.StatusCode)
+		}
+		return result
+	}
+	if submitted.Immediate == nil || submitted.Immediate.Status != model.TaskStatusSuccess {
+		result.localErr = common.NewMessage("Invalid response")
+		result.newAPIError = types.NewOpenAIError(result.localErr, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		return result
+	}
+	service.LogTaskChannelTest(c, info, submitted.Immediate, int(time.Since(started).Seconds()))
+	return result
+}
+
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
 	if ctx == nil {
 		ctx = context.Background()
@@ -118,7 +175,8 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	// Advanced Custom channel.
 	plugin, bound := service.PluginOfChannel(channel)
 	providerChannel := bound && plugin.Meta.HasProviderPart()
-	if lo.Contains(unsupportedTestChannelTypes, channel.Type) && !providerChannel {
+	systemOneChannel := bound && plugin.Meta.Key == "typesafe" && plugin.Meta.HasTaskPart()
+	if lo.Contains(unsupportedTestChannelTypes, channel.Type) && !providerChannel && !systemOneChannel {
 		channelTypeName := constant.GetChannelTypeName(channel.Type)
 		return testResult{
 			localErr: fmt.Errorf("%s channel test is not supported", channelTypeName),
@@ -192,6 +250,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	if isStream && constant.EndpointType(endpointType) == constant.EndpointTypeGemini {
 		requestPath = strings.Replace(requestPath, ":generateContent", ":streamGenerateContent", 1)
 	}
+	if systemOneChannel {
+		requestPath = "/v1/systemone"
+	}
 	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, requestPath, nil)
 
 	cache, err := model.GetUserCache(testUserID)
@@ -218,6 +279,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			localErr:    newAPIError,
 			newAPIError: newAPIError,
 		}
+	}
+	if systemOneChannel {
+		return testSystemOneChannel(c, channel, plugin, testModel)
 	}
 
 	// Determine relay format based on endpoint type or request path
@@ -924,6 +988,12 @@ func TestChannel(c *gin.Context) {
 			"success": false,
 			"message": result.localErr.Error(),
 			"time":    0.0,
+		}
+		var message *common.Message
+		if errors.As(result.localErr, &message) {
+			for key, value := range message.Fields() {
+				resp[key] = value
+			}
 		}
 		if result.newAPIError != nil {
 			resp["error_code"] = result.newAPIError.GetErrorCode()

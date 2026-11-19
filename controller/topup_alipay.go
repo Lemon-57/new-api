@@ -29,21 +29,43 @@ import (
 
 const alipayOrderTTL = 15 * time.Minute
 
-func directAlipayConfigured() bool {
-	return strings.TrimSpace(operation_setting.AlipayAppID) != "" &&
-		strings.TrimSpace(operation_setting.AlipayPrivateKey) != "" &&
-		strings.TrimSpace(operation_setting.AlipayPublicKey) != ""
+type directAlipaySettings struct {
+	appID      string
+	privateKey string
+	publicKey  string
+	notifyURL  string
+	returnURL  string
 }
 
-func getDirectAlipayClient() (*alipay.Client, error) {
-	if !directAlipayConfigured() {
+func loadDirectAlipaySettings() directAlipaySettings {
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
+	return directAlipaySettings{
+		appID:      strings.TrimSpace(common.OptionMap["AlipayAppID"]),
+		privateKey: strings.TrimSpace(common.OptionMap["AlipayPrivateKey"]),
+		publicKey:  strings.TrimSpace(common.OptionMap["AlipayPublicKey"]),
+		notifyURL:  strings.TrimSpace(common.OptionMap["AlipayNotifyURL"]),
+		returnURL:  strings.TrimSpace(common.OptionMap["AlipayReturnURL"]),
+	}
+}
+
+func (settings directAlipaySettings) configured() bool {
+	return settings.appID != "" && settings.privateKey != "" && settings.publicKey != ""
+}
+
+func isDirectAlipayTopUpEnabled() bool {
+	return isPaymentComplianceConfirmed() && operation_setting.ContainsPayMethod("alipay") && loadDirectAlipaySettings().configured()
+}
+
+func (settings directAlipaySettings) client() (*alipay.Client, error) {
+	if !settings.configured() {
 		return nil, fmt.Errorf("direct Alipay is not configured")
 	}
-	client, err := alipay.New(operation_setting.AlipayAppID, operation_setting.AlipayPrivateKey, true)
+	client, err := alipay.New(settings.appID, settings.privateKey, true)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Alipay client: %w", err)
 	}
-	if err := client.LoadAliPayPublicKey(operation_setting.AlipayPublicKey); err != nil {
+	if err := client.LoadAliPayPublicKey(settings.publicKey); err != nil {
 		return nil, fmt.Errorf("load Alipay public key: %w", err)
 	}
 	return client, nil
@@ -52,15 +74,6 @@ func getDirectAlipayClient() (*alipay.Client, error) {
 // RequestAlipay creates a native Alipay face-to-face precreate order. The
 // browser is sent to an in-process checkout page that renders the QR code;
 // payment confirmation still arrives only through the verified callback.
-func RequestAlipay(c *gin.Context) {
-	var req EpayRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		paymentError(c, common.NewMessage("Invalid parameters"))
-		return
-	}
-	requestAlipay(c, req)
-}
-
 func requestAlipay(c *gin.Context, req EpayRequest) {
 	if req.Amount < getMinTopup() {
 		paymentError(c, common.NewMessage("Top-up amount cannot be less than {{min}}", map[string]any{"min": getMinTopup()}))
@@ -80,18 +93,19 @@ func requestAlipay(c *gin.Context, req EpayRequest) {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return
 	}
-	client, err := getDirectAlipayClient()
+	settings := loadDirectAlipaySettings()
+	client, err := settings.client()
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("direct Alipay is unavailable: %q", err.Error()))
 		paymentError(c, common.NewMessage("Payment information has not been configured by administrator"))
 		return
 	}
 	tradeNo := fmt.Sprintf("ALIPAYUSR%d%s%d", id, common.GetRandomString(6), time.Now().Unix())
-	callback := operation_setting.AlipayNotifyURL
+	callback := settings.notifyURL
 	if strings.TrimSpace(callback) == "" {
 		callback = service.GetCallbackAddress() + "/api/user/alipay/notify"
 	}
-	returnURL := operation_setting.AlipayReturnURL
+	returnURL := settings.returnURL
 	if strings.TrimSpace(returnURL) == "" {
 		returnURL = service.GetCallbackAddress() + paymentReturnPath("/usage-logs")
 	}
@@ -122,7 +136,7 @@ func requestAlipay(c *gin.Context, req EpayRequest) {
 }
 
 func AlipayCheckout(c *gin.Context) {
-	if !directAlipayConfigured() {
+	if !loadDirectAlipaySettings().configured() {
 		http.Error(c.Writer, "payment unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -164,7 +178,8 @@ func AlipayCheckout(c *gin.Context) {
 }
 
 func AlipayNotify(c *gin.Context) {
-	if !directAlipayConfigured() {
+	settings := loadDirectAlipaySettings()
+	if !settings.configured() {
 		_, _ = io.WriteString(c.Writer, "fail")
 		return
 	}
@@ -188,13 +203,13 @@ func AlipayNotify(c *gin.Context) {
 		_, _ = io.WriteString(c.Writer, "fail")
 		return
 	}
-	client, err := getDirectAlipayClient()
+	client, err := settings.client()
 	if err != nil {
 		_, _ = io.WriteString(c.Writer, "fail")
 		return
 	}
 	notification, err := client.DecodeNotification(c.Request.Context(), values)
-	if err != nil || notification == nil || notification.AppId != operation_setting.AlipayAppID || notification.OutTradeNo != order.TradeNo || notification.TradeNo == "" || (notification.TradeStatus != alipay.TradeStatusSuccess && notification.TradeStatus != alipay.TradeStatusFinished) {
+	if err != nil || notification == nil || notification.AppId != settings.appID || notification.OutTradeNo != order.TradeNo || notification.TradeNo == "" || (notification.TradeStatus != alipay.TradeStatusSuccess && notification.TradeStatus != alipay.TradeStatusFinished) {
 		_, _ = io.WriteString(c.Writer, "fail")
 		return
 	}
@@ -215,4 +230,3 @@ func AlipayNotify(c *gin.Context) {
 	}
 	_, _ = io.WriteString(c.Writer, "success")
 }
-

@@ -13,13 +13,6 @@ var PayAddress = ""
 var CustomCallbackAddress = ""
 var EpayId = ""
 var EpayKey = ""
-// Direct Alipay Open Platform credentials. These are kept separate from the
-// legacy Epay credentials so the native Epay path remains unchanged.
-var AlipayAppID = ""
-var AlipayPrivateKey = ""
-var AlipayPublicKey = ""
-var AlipayNotifyURL = ""
-var AlipayReturnURL = ""
 var Price = 7.3
 var MinTopUp = 1
 var USDExchangeRate = 7.3
