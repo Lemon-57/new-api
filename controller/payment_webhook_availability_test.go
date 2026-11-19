@@ -220,12 +220,14 @@ func TestDirectAlipayWalletPayment(t *testing.T) {
 	confirmPaymentComplianceForTest(t)
 	oldOptions, oldMethods, oldClient := common.OptionMap, operation_setting.PayMethods, http.DefaultClient
 	oldAddress, oldID, oldKey := operation_setting.PayAddress, operation_setting.EpayId, operation_setting.EpayKey
+	oldSignType := operation_setting.GetPaymentSetting().EpaySignType
 	oldQuota, oldPrice, oldMinimum := common.QuotaPerUnit, operation_setting.Price, operation_setting.MinTopUp
 	general := operation_setting.GetGeneralSetting()
 	oldDisplay := general.QuotaDisplayType
 	t.Cleanup(func() {
 		common.OptionMap, operation_setting.PayMethods, http.DefaultClient = oldOptions, oldMethods, oldClient
 		operation_setting.PayAddress, operation_setting.EpayId, operation_setting.EpayKey = oldAddress, oldID, oldKey
+		operation_setting.GetPaymentSetting().EpaySignType = oldSignType
 		common.QuotaPerUnit, operation_setting.Price, operation_setting.MinTopUp = oldQuota, oldPrice, oldMinimum
 		general.QuotaDisplayType = oldDisplay
 	})
@@ -288,6 +290,9 @@ func TestDirectAlipayWalletPayment(t *testing.T) {
 			if engine.name != "sqlite" && engine.dsn == "" {
 				t.Skip("isolated payment test database not configured")
 			}
+			operation_setting.PayAddress, operation_setting.EpayId, operation_setting.EpayKey = "", "", ""
+			operation_setting.GetPaymentSetting().EpaySignType = operation_setting.EpaySignTypeMD5
+			operation_setting.PayMethods = []map[string]string{{"type": "alipay"}, {"type": "wxpay"}}
 			oldDB, oldLogDB := model.DB, model.LOG_DB
 			oldMainKind, oldLogKind := common.MainDatabaseType(), common.LogDatabaseType()
 			oldRedis, oldCache, oldMaster, oldSQLite := common.RedisEnabled, common.MemoryCacheEnabled, common.IsMasterNode, common.SQLitePath
@@ -476,6 +481,46 @@ func TestDirectAlipayWalletPayment(t *testing.T) {
 			require.NoError(t, database.First(&user, 42).Error)
 			require.Equal(t, 15000300, user.Quota)
 			require.Equal(t, common.TopUpStatusSuccess, model.GetTopUpByTradeNo(order.Data.TradeNo).Status)
+
+			paymentSetting.ComplianceConfirmed = true
+			paymentSetting.EpaySignType = operation_setting.EpaySignTypeEzpay
+			operation_setting.PayAddress, operation_setting.EpayId, operation_setting.EpayKey = "https://epay.example", "epay-merchant", "fixture-secret"
+			operation_setting.PayMethods = []map[string]string{
+				{"type": "alipay", "name": "Direct Alipay"},
+				{"type": operation_setting.EpayAlipayMethod, "name": "Ezpay Alipay"},
+				{"type": "usdt_trc20", "name": "USDT-TRC20"},
+			}
+			enabled, methods = readInfo()
+			require.True(t, enabled)
+			require.Equal(t, operation_setting.PayMethods, methods)
+			before = precreates
+			direct := call(http.MethodPost, "/api/user/pay", "application/json", submission)
+			require.NoError(t, common.Unmarshal(direct.Body.Bytes(), &order), direct.Body.String())
+			require.Equal(t, "success", order.Message)
+			require.Equal(t, "/api/user/alipay/checkout", order.URL)
+			require.Equal(t, model.PaymentProviderAlipay, model.GetTopUpByTradeNo(order.Data.TradeNo).PaymentProvider)
+			for _, method := range []struct{ id, upstream string }{
+				{operation_setting.EpayAlipayMethod, "alipay"},
+				{"usdt_trc20", "usdt_trc20"},
+			} {
+				var checkout struct {
+					Message string            `json:"message"`
+					URL     string            `json:"url"`
+					Data    map[string]string `json:"data"`
+				}
+				payload := fmt.Sprintf(`{"amount":10,"payment_method":%q}`, method.id)
+				response := call(http.MethodPost, "/api/user/pay", "application/json", payload)
+				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &checkout), response.Body.String())
+				require.Equal(t, "success", checkout.Message)
+				require.Equal(t, "https://epay.example/submit.php", checkout.URL)
+				require.Equal(t, method.upstream, checkout.Data["type"])
+				require.Equal(t, "CNY", checkout.Data["currency"])
+				require.NotContains(t, checkout.Data, "device")
+				epOrder := model.GetTopUpByTradeNo(checkout.Data["out_trade_no"])
+				require.NotNil(t, epOrder)
+				require.Equal(t, model.PaymentProviderEpay, epOrder.PaymentProvider)
+			}
+			require.Equal(t, before+1, precreates, "ezpay must not open an Alipay direct order")
 		})
 	}
 }
