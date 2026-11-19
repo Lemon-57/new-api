@@ -91,12 +91,25 @@ func SubscriptionRequestEpay(c *gin.Context) {
 	tradeNo := fmt.Sprintf("%s%d", common.GetRandomString(6), time.Now().Unix())
 	tradeNo = fmt.Sprintf("SUBUSR%dNO%s", userId, tradeNo)
 
+	uri, params, err := purchaseEpay(client, epay.PurchaseArgs{
+		Type:           req.PaymentMethod,
+		ServiceTradeNo: tradeNo,
+		Name:           fmt.Sprintf("SUB:%s", plan.Title),
+		Money:          strconv.FormatFloat(plan.PriceAmount, 'f', 2, 64),
+		Device:         epay.PC,
+		NotifyUrl:      notifyUrl,
+		ReturnUrl:      returnUrl,
+	}, "USD")
+	if err != nil {
+		common.ApiErrorT(c, "Failed to start payment")
+		return
+	}
 	order := &model.SubscriptionOrder{
 		UserId:          userId,
 		PlanId:          plan.Id,
 		Money:           plan.PriceAmount,
 		TradeNo:         tradeNo,
-		PaymentMethod:   req.PaymentMethod,
+		PaymentMethod:   params["type"],
 		PaymentProvider: model.PaymentProviderEpay,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
@@ -105,21 +118,15 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		common.ApiErrorT(c, "Failed to create order")
 		return
 	}
-	uri, params, err := client.Purchase(&epay.PurchaseArgs{
-		Type:           req.PaymentMethod,
-		ServiceTradeNo: tradeNo,
-		Name:           fmt.Sprintf("SUB:%s", plan.Title),
-		Money:          strconv.FormatFloat(plan.PriceAmount, 'f', 2, 64),
-		Device:         epay.PC,
-		NotifyUrl:      notifyUrl,
-		ReturnUrl:      returnUrl,
-	})
-	if err != nil {
-		_ = model.ExpireSubscriptionOrder(tradeNo, model.PaymentProviderEpay)
-		common.ApiErrorT(c, "Failed to start payment")
-		return
-	}
 	c.JSON(http.StatusOK, gin.H{"message": "success", "data": params, "url": uri})
+}
+
+func subscriptionEzpayPaymentMatches(tradeNo string, params map[string]string, partnerID string) bool {
+	if operation_setting.GetPaymentSetting().EpaySignType != operation_setting.EpaySignTypeEzpay {
+		return true
+	}
+	order := model.GetSubscriptionOrderByTradeNo(tradeNo)
+	return order != nil && params["pid"] == partnerID && ezpayPaymentMatches(params, order.Money, "USD")
 }
 
 func SubscriptionEpayNotify(c *gin.Context) {
@@ -159,7 +166,7 @@ func SubscriptionEpayNotify(c *gin.Context) {
 		return
 	}
 
-	if verifyInfo.TradeStatus != epay.StatusTradeSuccess {
+	if verifyInfo.TradeStatus != epay.StatusTradeSuccess || !subscriptionEzpayPaymentMatches(verifyInfo.ServiceTradeNo, params, client.Config.PartnerID) {
 		_, _ = c.Writer.Write([]byte("fail"))
 		return
 	}
@@ -214,6 +221,10 @@ func SubscriptionEpayReturn(c *gin.Context) {
 		return
 	}
 	if verifyInfo.TradeStatus == epay.StatusTradeSuccess {
+		if !subscriptionEzpayPaymentMatches(verifyInfo.ServiceTradeNo, params, client.Config.PartnerID) {
+			c.Redirect(http.StatusFound, paymentReturnPath("/wallet?pay=fail"))
+			return
+		}
 		LockOrder(verifyInfo.ServiceTradeNo)
 		defer UnlockOrder(verifyInfo.ServiceTradeNo)
 		if err := model.CompleteSubscriptionOrder(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo), model.PaymentProviderEpay, verifyInfo.Type); err != nil {

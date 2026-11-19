@@ -165,6 +165,36 @@ func GetEpayClient() *epay.Client {
 	return withUrl
 }
 
+func purchaseEpay(client *epay.Client, args epay.PurchaseArgs, currency string) (string, map[string]string, error) {
+	if args.Type == operation_setting.EpayAlipayMethod {
+		args.Type = "alipay"
+	}
+	if operation_setting.GetPaymentSetting().EpaySignType != operation_setting.EpaySignTypeEzpay {
+		return client.Purchase(&args)
+	}
+	args.Device = ""
+	endpoint, params, err := client.Purchase(&args)
+	if err != nil {
+		return "", nil, err
+	}
+	delete(params, "device")
+	params["currency"] = currency
+	signed, err := client.SignParams(params)
+	return endpoint, signed, err
+}
+
+func ezpayPaymentMatches(params map[string]string, expectedMoney float64, expectedCurrency string) bool {
+	if params["currency"] != expectedCurrency {
+		return false
+	}
+	money, err := decimal.NewFromString(params["money"])
+	if err != nil || !money.IsPositive() {
+		return false
+	}
+	expected, err := decimal.NewFromString(strconv.FormatFloat(expectedMoney, 'f', 2, 64))
+	return err == nil && money.Equal(expected)
+}
+
 func getPayMoney(amount int64, group string) float64 {
 	dAmount := decimal.NewFromInt(amount)
 	// 充值金额以“展示类型”为准：
@@ -354,7 +384,7 @@ func RequestEpay(c *gin.Context) {
 		paymentError(c, common.NewMessage("Payment information has not been configured by administrator"))
 		return
 	}
-	uri, params, err := client.Purchase(&epay.PurchaseArgs{
+	uri, params, err := purchaseEpay(client, epay.PurchaseArgs{
 		Type:           req.PaymentMethod,
 		ServiceTradeNo: tradeNo,
 		Name:           fmt.Sprintf("TUC%d", req.Amount),
@@ -362,7 +392,7 @@ func RequestEpay(c *gin.Context) {
 		Device:         epay.PC,
 		NotifyUrl:      notifyUrl,
 		ReturnUrl:      returnUrl,
-	})
+	}, "CNY")
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Epay failed to start payment user_id=%d trade_no=%s payment_method=%s amount=%d error=%q", id, tradeNo, req.PaymentMethod, req.Amount, err.Error()))
 		paymentError(c, common.NewMessage("Failed to start payment"))
@@ -379,7 +409,7 @@ func RequestEpay(c *gin.Context) {
 		Amount:          amount,
 		Money:           payMoney,
 		TradeNo:         tradeNo,
-		PaymentMethod:   req.PaymentMethod,
+		PaymentMethod:   params["type"],
 		PaymentProvider: model.PaymentProviderEpay,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
@@ -494,6 +524,14 @@ func EpayNotify(c *gin.Context) {
 	logger.LogInfo(c.Request.Context(), common.LogText("Epay webhook signature verified trade_no=%s callback_type=%s trade_status=%s client_ip=%s verify_info=%q", verifyInfo.ServiceTradeNo, verifyInfo.Type, verifyInfo.TradeStatus, c.ClientIP(), common.GetJsonString(verifyInfo)))
 
 	if verifyInfo.TradeStatus == epay.StatusTradeSuccess {
+		if operation_setting.GetPaymentSetting().EpaySignType == operation_setting.EpaySignTypeEzpay {
+			order := model.GetTopUpByTradeNo(verifyInfo.ServiceTradeNo)
+			if order == nil || params["pid"] != client.Config.PartnerID || !ezpayPaymentMatches(params, order.Money, "CNY") {
+				logger.LogWarn(c.Request.Context(), common.LogText("ezpay callback order amount or currency mismatch trade_no=%q", verifyInfo.ServiceTradeNo))
+				c.String(http.StatusOK, "fail")
+				return
+			}
+		}
 		// 进程内锁只是优化；重复/并发回调的正确性由 RechargeEpay 的
 		// 数据库行锁 + 事务内状态校验保证（多实例部署下同样安全）。
 		LockOrder(verifyInfo.ServiceTradeNo)

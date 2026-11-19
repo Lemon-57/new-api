@@ -2514,7 +2514,7 @@
     "Epay merchant ID": "易支付商戶 ID",
     "Epay safety reminder": "Epay 安全提醒",
     "Epay secret key": "Epay 金鑰",
-    "Epay signature type must be MD5 or RSA": "易支付簽名方式只能是 MD5 或 RSA",
+    "Epay signature type must be MD5, RSA, or ezpay (MD5)": "易支付簽名方式只能是 MD5、RSA 或 ezpay (MD5)",
     "Epay WeChat Pay": "Epay 微信支付",
     "Equals": "等於",
     "Error": "錯誤",

@@ -27,8 +27,10 @@ type PaymentSetting struct {
 const CurrentComplianceTermsVersion = "v1"
 
 const (
-	EpaySignTypeMD5 = "MD5"
-	EpaySignTypeRSA = "RSA"
+	EpaySignTypeMD5   = "MD5"
+	EpaySignTypeRSA   = "RSA"
+	EpaySignTypeEzpay = "EZPAY_MD5"
+	EpayAlipayMethod  = "epay_alipay"
 
 	EpaySignTypeOptionKey           = "payment_setting.epay_sign_type"
 	EpayMerchantPrivateKeyOptionKey = "payment_setting.epay_merchant_private_key"
@@ -72,8 +74,8 @@ func ValidateEpaySignOption(key, value string) error {
 	common.OptionMapRWMutex.RUnlock()
 	switch key {
 	case EpaySignTypeOptionKey:
-		if value != EpaySignTypeMD5 && value != EpaySignTypeRSA {
-			return common.NewMessage("Epay signature type must be MD5 or RSA")
+		if value != EpaySignTypeMD5 && value != EpaySignTypeRSA && value != EpaySignTypeEzpay {
+			return common.NewMessage("Epay signature type must be MD5, RSA, or ezpay (MD5)")
 		}
 		signType = value
 	case EpayMerchantPrivateKeyOptionKey:

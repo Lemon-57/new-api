@@ -1283,6 +1283,7 @@ export function PaymentSettingsSection({
                           items={[
                             { value: 'MD5', label: 'MD5' },
                             { value: 'RSA', label: 'RSA' },
+                            { value: 'EZPAY_MD5', label: 'ezpay (MD5)' },
                           ]}
                           value={field.value}
                           onValueChange={field.onChange}
@@ -1296,6 +1297,7 @@ export function PaymentSettingsSection({
                             <SelectGroup>
                               <SelectItem value='MD5'>MD5</SelectItem>
                               <SelectItem value='RSA'>RSA</SelectItem>
+                              <SelectItem value='EZPAY_MD5'>ezpay (MD5)</SelectItem>
                             </SelectGroup>
                           </SelectContent>
                         </Select>

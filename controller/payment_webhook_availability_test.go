@@ -26,8 +26,10 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func confirmPaymentComplianceForTest(t *testing.T) {
@@ -637,6 +639,86 @@ func TestEpayCallbacksVerifyBeforeSettlement(t *testing.T) {
 	assertEpayCallbacksVerifyBeforeSettlement(t, cases)
 }
 
+func TestEzpayCheckoutAndCallback(t *testing.T) {
+	setupEpayCallbackTest(t)
+	operation_setting.GetPaymentSetting().EpaySignType = operation_setting.EpaySignTypeEzpay
+	operation_setting.EpayKey = "test-key"
+	require.True(t, isEpayWebhookEnabled())
+	require.NoError(t, operation_setting.ValidateEpaySignOption(operation_setting.EpaySignTypeOptionKey, operation_setting.EpaySignTypeEzpay))
+	client := GetEpayClient()
+	require.NotNil(t, client)
+	notifyURL, err := url.Parse("https://dashboard.example.com/api/user/epay/notify")
+	require.NoError(t, err)
+	returnURL, err := url.Parse("https://dashboard.example.com/usage-logs")
+	require.NoError(t, err)
+	for method, payType := range map[string]string{operation_setting.EpayAlipayMethod: "alipay", "wxpay": "wxpay", "usdt_trc20": "usdt_trc20"} {
+		endpoint, order, err := purchaseEpay(client, epay.PurchaseArgs{
+			Type: method, ServiceTradeNo: "order", Name: "TUC1", Money: "1.00",
+			Device: epay.PC, NotifyUrl: notifyURL, ReturnUrl: returnURL,
+		}, "CNY")
+		require.NoError(t, err)
+		assert.Equal(t, "https://pay.example.com/submit.php", endpoint)
+		assert.NotContains(t, order, "device")
+		assert.Equal(t, "CNY", order["currency"])
+		assert.Equal(t, payType, order["type"])
+		assert.Equal(t, epay.SignTypeMD5, order["sign_type"])
+		expected := epay.MD5String("currency=CNY&money=1.00&name=TUC1&notify_url=https://dashboard.example.com/api/user/epay/notify&out_trade_no=order&pid=epay_id&return_url=https://dashboard.example.com/usage-logs&type="+payType, "test-key")
+		assert.Equal(t, expected, order["sign"])
+	}
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	originalLogDB := model.LOG_DB
+	originalRedisEnabled := common.RedisEnabled
+	t.Cleanup(func() {
+		model.LOG_DB = originalLogDB
+		common.RedisEnabled = originalRedisEnabled
+		require.NoError(t, sqlDB.Close())
+	})
+	model.DB = db
+	model.LOG_DB = db
+	common.RedisEnabled = false
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}))
+	require.NoError(t, db.Create(&model.User{Id: 53, Username: "ezpay-user"}).Error)
+	for tradeNo, provider := range map[string]string{"ezpay-order": model.PaymentProviderEpay, "direct-order": model.PaymentProviderAlipay} {
+		require.NoError(t, db.Create(&model.TopUp{
+			TradeNo: tradeNo, UserId: 53, Amount: 1, Money: 1,
+			PaymentMethod: "alipay", PaymentProvider: provider, Status: common.TopUpStatusPending,
+		}).Error)
+	}
+	router := gin.New()
+	router.GET(notifyURL.Path, EpayNotify)
+	for _, notification := range []struct{ tradeNo, currency, money, result string }{
+		{"direct-order", "CNY", "1.00", "fail"},
+		{"ezpay-order", "USD", "1.00", "fail"},
+		{"ezpay-order", "CNY", "0.99", "fail"},
+		{"ezpay-order", "CNY", "1.00", "success"},
+		{"ezpay-order", "CNY", "1.00", "success"},
+	} {
+		fields, err := client.SignParams(map[string]string{
+			"trade_status": epay.StatusTradeSuccess, "out_trade_no": notification.tradeNo,
+			"money": notification.money, "currency": notification.currency, "type": "alipay",
+			"pay_currency": "CNY", "pay_amount": "1.00",
+		})
+		require.NoError(t, err)
+		query := url.Values{}
+		for key, value := range fields {
+			query.Set(key, value)
+		}
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, notifyURL.Path+"?"+query.Encode(), nil))
+		assert.Equal(t, notification.result, response.Body.String())
+	}
+	var user model.User
+	require.NoError(t, db.First(&user, 53).Error)
+	assert.Equal(t, int(common.QuotaPerUnit), user.Quota)
+	assert.Equal(t, common.TopUpStatusPending, model.GetTopUpByTradeNo("direct-order").Status)
+	assert.Equal(t, common.TopUpStatusSuccess, model.GetTopUpByTradeNo("ezpay-order").Status)
+}
+
 func TestEpayRSAModeSignsOrdersAndVerifiesCallbacks(t *testing.T) {
 	setupEpayCallbackTest(t)
 	paymentSetting := operation_setting.GetPaymentSetting()
@@ -739,7 +821,7 @@ func TestUpdateOptionValidatesEpaySignSettings(t *testing.T) {
 		value     string
 		wantError string
 	}{
-		{"unknown signature type", signTypeKey, "SHA1", "Epay signature type must be MD5 or RSA"},
+		{"unknown signature type", signTypeKey, "SHA1", "Epay signature type must be MD5, RSA, or ezpay (MD5)"},
 		{"RSA before keys are saved", signTypeKey, "RSA", privateKeyError},
 		{"malformed private key", privateKeyKey, "not a key", privateKeyError},
 		{"public key in the private key field", privateKeyKey, platformPublicKey, privateKeyError},

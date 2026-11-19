@@ -2514,7 +2514,7 @@
     "Epay merchant ID": "ID người bán Epay",
     "Epay safety reminder": "Nhắc nhở an toàn Epay",
     "Epay secret key": "Khóa bí mật Epay",
-    "Epay signature type must be MD5 or RSA": "Kiểu chữ ký Epay phải là MD5 hoặc RSA",
+    "Epay signature type must be MD5, RSA, or ezpay (MD5)": "Kiểu chữ ký Epay phải là MD5, RSA hoặc ezpay (MD5)",
     "Epay WeChat Pay": "WeChat Pay qua Epay",
     "Equals": "Bằng",
     "Error": "Lỗi",

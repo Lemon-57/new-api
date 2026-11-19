@@ -2514,7 +2514,7 @@
     "Epay merchant ID": "ID торговца EasyPay",
     "Epay safety reminder": "Напоминание о безопасности Epay",
     "Epay secret key": "Секретный ключ Epay",
-    "Epay signature type must be MD5 or RSA": "Тип подписи Epay должен быть MD5 или RSA",
+    "Epay signature type must be MD5, RSA, or ezpay (MD5)": "Тип подписи Epay должен быть MD5, RSA или ezpay (MD5)",
     "Epay WeChat Pay": "WeChat Pay через Epay",
     "Equals": "Равно",
     "Error": "Ошибка",
