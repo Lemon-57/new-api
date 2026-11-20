@@ -33,7 +33,7 @@ func pluginName(meta jsplugin.Meta) map[string]string {
 // leaves out the others.
 func recorded(entry relaycommon.RequestPluginRecord) bool {
 	return len(entry.Changes) > 0 || entry.Headers != nil || entry.ReasoningEffort != "" ||
-		len(entry.Media) > 0 || len(entry.Attachments) > 0 || entry.Masked > 0 || len(entry.Findings) > 0 || entry.Rejected != nil || entry.Unchecked
+		len(entry.Media) > 0 || len(entry.Attachments) > 0 || entry.Masked > 0 || len(entry.Findings) > 0 || len(entry.Notice) > 0 || entry.Rejected != nil || entry.Unchecked
 }
 
 // describeChanges lists the json.patch operations of effects as users read

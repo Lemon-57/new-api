@@ -97,3 +97,7 @@ channel.upstream_update_failed_channels: "Failed channel IDs (showing {{.Shown}}
 channel.upstream_update_more_omitted: " ({{.Count}} more omitted)"
 
 channel.notify_scheduled_subject: "Channel \"{{.Name}}\" (#{{.Id}}) plugin notification"
+moderation.hit_subject: "Content audit notice"
+moderation.hit_body: "A request on your account matched a content rule. If you believe this is a mistake, contact the site administrator with request ID {{.RequestID}}."
+moderation.ban_subject: "Account suspended by content moderation"
+moderation.ban_body: "Your account was suspended after repeated content audit matches. To request a review, contact the site administrator with request ID {{.RequestID}}."

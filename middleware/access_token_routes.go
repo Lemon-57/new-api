@@ -209,8 +209,11 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"POST /api/plugin/task/:key/dryrun":              accessTokenScopeRule("plugin:write"),
 	"DELETE /api/plugin/task/:key/versions/:version": accessTokenScopeRule("plugin:write"),
 	// router/api-router.go: /api/request_plugin
-	"PUT /api/request_plugin/instances": accessTokenScopeRule("plugin:write"),
-	"POST /api/request_plugin/dry_run":  accessTokenScopeRule("plugin:write"),
+	"PUT /api/request_plugin/instances":                      accessTokenScopeRule("plugin:write"),
+	"POST /api/request_plugin/dry_run":                       accessTokenScopeRule("plugin:write"),
+	"GET /api/request_plugin/moderation/audits":              accessTokenSessionRule,
+	"GET /api/request_plugin/moderation/status":              accessTokenSessionRule,
+	"POST /api/request_plugin/moderation/audits/:id/release": accessTokenSessionRule,
 
 	// router/channel-router.go: the key route is RootAuth, not Casbin-guarded.
 	"POST /api/channel/:id/key": accessTokenScopeRule(service.AccessTokenScopeOf(authz.ChannelSecretView)),

@@ -1209,6 +1209,22 @@ func ManageUser(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	} else if req.Action == "disable" || req.Action == "enable" {
+		changed, err := model.SetUserStatusManually(user.Id, user.Status, myRole)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if changed {
+			if err := model.PublishUserAuthCache(user.Id); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			if _, err := model.RevokeAllUserSessions(user.Id, "user_security_changed"); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 	} else {
 		if err := user.Update(false); err != nil {
 			common.ApiError(c, err)

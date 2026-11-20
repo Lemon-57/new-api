@@ -1115,6 +1115,115 @@ func TestReplyMasksNonStreamAnswers(t *testing.T) {
 	assert.Len(t, info.RequestPluginSteps, 2)
 }
 
+func TestContentModerationAppliesConfiguredHTTPStatus(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	plugin, err := jsplugin.DefaultRegistry.Register(`
+export const meta = {apiVersion: 1, key: "content-moderation", name: "Moderation", version: "1.2.0", author: {name: "Test"}};
+export function ingress(ctx, req) {
+  if (!req.body.model) return {action: "continue"};
+  return {action: "reject", code: "moderation.flagged", message: "Please revise"};
+}
+export function reply(ctx, res) {
+  if (res.stream && res.outputs[0].text === "Opening") return {action: "continue"};
+  return {action: "stop", code: "moderation.flagged", message: "Please revise"};
+}`, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = jsplugin.DefaultRegistry.Unregister(plugin.Meta.Key) })
+	setInstances(t, `[{"id":"moderation","name":"Moderation","plugin":"content-moderation","enabled":true,"global":true,"config":{"blockStatus":422}}]`)
+
+	t.Run("rejected ingress has the configured status and stable error code", func(t *testing.T) {
+		ctx := newContext(`{"model":"gpt","messages":[{"role":"user","content":"fixture"}]}`, "default")
+		_, records, apiErr := Ingress(ctx, types.RelayFormatOpenAI)
+		require.NotNil(t, apiErr)
+		assert.Equal(t, http.StatusUnprocessableEntity, apiErr.StatusCode)
+		assert.Equal(t, types.ErrorCodeRequestRejected, apiErr.GetErrorCode())
+		assert.Equal(t, "Please revise (code: moderation.flagged)", apiErr.Error())
+		require.Len(t, records, 1)
+		assert.Equal(t, &relaycommon.RequestPluginRejected{Code: "moderation.flagged"}, records[0].Rejected)
+	})
+	t.Run("non-stream reply stops before headers", func(t *testing.T) {
+		ctx, recorder := replyContext(t, "/v1/chat/completions", types.RelayFormatOpenAI)
+		finish := Reply(ctx, types.RelayFormatOpenAI, replyInfo(types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions))
+		writeAnswer(ctx, chatAnswer("never delivered"))
+		finish()
+		assert.Equal(t, http.StatusUnprocessableEntity, recorder.Code)
+		assert.Equal(t, "response_rejected", gjson.Get(recorder.Body.String(), "error.code").Str)
+		assert.NotContains(t, recorder.Body.String(), "never delivered")
+	})
+	t.Run("committed SSE keeps its HTTP status and emits a policy error", func(t *testing.T) {
+		ctx, recorder := replyContext(t, "/v1/chat/completions", types.RelayFormatOpenAI)
+		finish := Reply(ctx, types.RelayFormatOpenAI, replyInfo(types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions))
+		ctx.Writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = ctx.Writer.WriteString(chatChunk("Opening", ""))
+		_, _ = ctx.Writer.WriteString(chatChunk("never delivered", ""))
+		finish()
+		assert.Equal(t, http.StatusOK, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), `"code":"response_rejected"`)
+		assert.NotContains(t, recorder.Body.String(), "never delivered")
+	})
+	t.Run("first flagged event can set the configured status before headers", func(t *testing.T) {
+		ctx, recorder := replyContext(t, "/v1/chat/completions", types.RelayFormatOpenAI)
+		finish := Reply(ctx, types.RelayFormatOpenAI, replyInfo(types.RelayFormatOpenAI, relayconstant.RelayModeChatCompletions))
+		ctx.Writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = ctx.Writer.WriteString(chatChunk("never delivered", ""))
+		finish()
+		assert.Equal(t, http.StatusUnprocessableEntity, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), `"code":"response_rejected"`)
+		assert.NotContains(t, recorder.Body.String(), "never delivered")
+	})
+}
+
+func TestContentModerationObservationDoesNotWaitForAudit(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	providerStarted := make(chan string, 1)
+	allowProvider := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		data, err := io.ReadAll(req.Body)
+		if err != nil {
+			return
+		}
+		providerStarted <- gjson.GetBytes(data, "input").String()
+		select {
+		case <-allowProvider:
+			_, _ = w.Write([]byte(`{"results":[{"flagged":true,"category_scores":{"violence":0.9}}]}`))
+		case <-req.Context().Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(allowProvider) })
+	plugin, err := jsplugin.DefaultRegistry.Register(`
+export const meta = {apiVersion: 1, key: "content-moderation", name: "Moderation", version: "1.2.0", author: {name: "Test"}, requiredCapabilities: ["moderation-audit@1"], configSchema: {type:"object",properties:{url:{type:"string",format:"url",title:"Audit endpoint"}}}};
+export function ingress(ctx, req) {
+  utils.fetch({url:ctx.config.url,method:"POST",body:JSON.stringify({input:req.body.messages[0].content})});
+  return {action:"reject", code:"moderation.flagged"};
+}`, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = jsplugin.DefaultRegistry.Unregister(plugin.Meta.Key) })
+	setInstances(t, `[{"id":"observe","name":"Observe","plugin":"content-moderation","enabled":true,"global":true,"config":{"auditMode":"observe","url":"`+server.URL+`/v1/moderations"}}]`)
+	const raw = `{"model":"gpt","messages":[{"role":"user","content":"fixture input"}]}`
+	ctx := newContext(raw, "default")
+	ctx.Set("id", 71)
+	ctx.Request = ctx.Request.WithContext(context.WithValue(t.Context(), common.RequestIdKey, "observe-async-1"))
+	returned := make(chan *types.NewAPIError, 1)
+	go func() {
+		_, _, apiErr := Ingress(ctx, types.RelayFormatOpenAI)
+		returned <- apiErr
+	}()
+	select {
+	case err := <-returned:
+		require.Nil(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("client request waited for the observation result")
+	}
+	require.Equal(t, raw, string(storedBody(t, ctx)))
+	select {
+	case text := <-providerStarted:
+		assert.Equal(t, "fixture input", text)
+	case <-time.After(3 * time.Second):
+		t.Fatal("the observation worker did not evaluate the captured input")
+	}
+}
+
 func TestReplyStopsNonStreamAnswers(t *testing.T) {
 	setupReplyPlugins(t, `[
 		{"id":"policy","name":"Policy","plugin":"rp-reply","enabled":true,"global":true,"config":{"stop":"forbidden","message":"Not allowed"}},

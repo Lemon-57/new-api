@@ -720,6 +720,71 @@ func TestContentModerationPlugin(t *testing.T) {
 	})
 }
 
+func TestOpenAIContentModerationThresholdOverrides(t *testing.T) {
+	const request = `{"model":"gpt-test","messages":[{"role":"user","content":"test prompt"}]}`
+	const scored = `{"results":[{"flagged":false,"categories":{"violence":false},"category_scores":{"violence":0.5}}]}`
+	const flagged = `{"results":[{"flagged":true,"categories":{"violence":true},"category_scores":{"violence":0.5}}]}`
+	tests := []struct {
+		name      string
+		response  string
+		threshold *float64
+		selected  []string
+		reject    bool
+		invalid   bool
+	}{
+		{name: "legacy unflagged scores do not reject", response: scored},
+		{name: "legacy flagged category rejects", response: flagged, reject: true},
+		{name: "score equal to explicit threshold rejects despite upstream flag", response: scored, threshold: new(0.5), reject: true},
+		{name: "score below explicit threshold overrides upstream flag", response: flagged, threshold: new(0.6)},
+		{name: "excluded category does not require a score", response: moderationResult(map[string]bool{"violence": true}), threshold: new(0.5), selected: []string{"hate"}},
+		{name: "missing configured score is an audit failure", response: moderationResult(map[string]bool{}), threshold: new(0.5), invalid: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]any{"blockMessage": "Please revise the input"}
+			if test.threshold != nil {
+				config["openAIThresholds"] = []map[string]any{{"category": "violence", "threshold": *test.threshold}}
+			}
+			if test.selected != nil {
+				config["categories"] = test.selected
+			}
+			result, calls, err := runModeration(t, config, "openai", "/v1/chat/completions", request, http.StatusOK, test.response)
+			require.Len(t, calls, 1)
+			if test.invalid {
+				var transformErr *jsplugin.TransformError
+				require.ErrorAs(t, err, &transformErr)
+				assert.Contains(t, transformErr.Thrown, "invalid score for violence")
+				return
+			}
+			require.NoError(t, err)
+			if !test.reject {
+				assert.Equal(t, "continue", result.Action)
+				return
+			}
+			assert.Equal(t, "reject", result.Action)
+			assert.Equal(t, "moderation.flagged", result.Code)
+			assert.Equal(t, "Please revise the input", result.Message)
+			assert.Equal(t, "violence", result.RuleID)
+		})
+	}
+}
+
+func TestContentModerationSkipsOnlyConfiguredAuditFailure(t *testing.T) {
+	const request = `{"model":"gpt-test","messages":[{"role":"user","content":"test prompt"}]}`
+	const path = "/v1/chat/completions"
+	config := map[string]any{"auditErrorPolicy": "skip", "auditRetryCount": 0}
+	result, calls, err := runModeration(t, config, "openai", path, request, http.StatusServiceUnavailable, `{"private":"credential"}`)
+	require.NoError(t, err)
+	require.Len(t, calls, 1)
+	assert.Equal(t, "continue", result.Action)
+	assert.Contains(t, result.Notice["en"], "this check was skipped")
+	assert.NotContains(t, result.Notice["en"], "credential")
+	result, _, err = runModeration(t, config, "openai", path, request, http.StatusOK, moderationResult(map[string]bool{"violence": true}))
+	require.NoError(t, err)
+	assert.Equal(t, "reject", result.Action)
+	assert.Empty(t, result.Notice)
+}
+
 func TestContentModerationTypeSafe(t *testing.T) {
 	const path = "/v1/chat/completions"
 	const chat = `{"messages":[{"role":"system","content":"private instructions"},{"role":"user","content":"first"},{"role":"assistant","content":"private reply"},{"role":"user","content":"second"}]}`

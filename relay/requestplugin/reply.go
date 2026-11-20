@@ -24,7 +24,6 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
-	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/request_plugin_setting"
 
 	"github.com/gin-gonic/gin"
@@ -120,16 +119,18 @@ type replyTarget struct {
 	// skipped is set when the instance let the rest of the answer pass, or
 	// failed and its plugin is optional: the text passes it unchanged for the
 	// rest of the answer.
-	skipped   bool
-	action    string
-	masked    int
-	findings  []relaycommon.RequestPluginFinding
-	notice    jsplugin.LocalizedText
-	duration  time.Duration
-	errClass  string
-	detail    string
-	rejected  string
-	unchecked bool
+	skipped          bool
+	action           string
+	masked           int
+	findings         []relaycommon.RequestPluginFinding
+	notice           jsplugin.LocalizedText
+	duration         time.Duration
+	errClass         string
+	detail           string
+	rejected         string
+	unchecked        bool
+	observing        map[int]string
+	observationBytes int
 }
 
 // replyOutput is one answer of a reply: the upstream text the instances have
@@ -180,6 +181,7 @@ type replyStop struct {
 	instance string
 	code     string
 	message  string
+	status   int
 	failed   bool
 	class    string
 	detail   string
@@ -285,7 +287,7 @@ func (r *replyCheck) run(batch []*replyOutput) bool {
 			continue
 		}
 		if err != nil || result.Action == "stop" {
-			stop := &replyStop{instance: target.instance.ID, code: result.Code, message: result.Message, text: map[int]string{}}
+			stop := &replyStop{instance: target.instance.ID, code: result.Code, message: result.Message, status: moderationBlockStatus(target.instance, result.Code), text: map[int]string{}}
 			if err != nil {
 				stop.code, stop.failed, stop.class, stop.detail = string(types.ErrorCodeRequestPluginFailed), true, target.errClass, target.detail
 			}
@@ -385,9 +387,8 @@ func (r *replyCheck) callTarget(target *replyTarget, outputs []jsplugin.ReplyOut
 		Instance:      jsplugin.TransformInstance{ID: target.instance.ID, Name: target.instance.Name},
 		Config:        target.instance.Config,
 	}
-	ctx := jsplugin.WithFetcher(r.ctx, service.RequestPluginFetcher(target.plugin, target.instance.Config))
 	started := time.Now()
-	result, err := target.plugin.CallReply(ctx, tctx, r.stream, outputs)
+	result, err := callModerationReply(r.ctx, target, tctx, r.stream, outputs)
 	target.duration += time.Since(started)
 	if err != nil {
 		target.action, target.errClass = "fail", jsplugin.TransformErrorFailed
@@ -966,7 +967,7 @@ func (w *replyWriter) stopError() *types.NewAPIError {
 		if message == "" {
 			message = i18n.T(w.c, i18n.MsgRelayResponseRejected)
 		}
-		apiErr = types.NewErrorWithStatusCode(fmt.Errorf("%s (code: %s)", message, stop.code), types.ErrorCodeResponseRejected, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		apiErr = types.NewErrorWithStatusCode(fmt.Errorf("%s (code: %s)", message, stop.code), types.ErrorCodeResponseRejected, max(http.StatusBadRequest, stop.status), types.ErrOptionWithSkipRetry())
 	}
 	apiErr.SetMessage(common.MessageWithRequestId(apiErr.Error(), w.c.GetString(common.RequestIdKey)))
 	return apiErr
@@ -1475,6 +1476,9 @@ func (w *replyWriter) stopStream() {
 	}
 	apiErr := w.stopError()
 	encoded, _ := common.Marshal(replyErrorBody(w.c, w.format, apiErr))
+	if w.check.stop.status > 0 && !w.ResponseWriter.Written() {
+		w.ResponseWriter.WriteHeader(apiErr.StatusCode)
+	}
 	if w.format == types.RelayFormatClaude {
 		_, _ = w.ResponseWriter.Write([]byte("event: error\ndata: " + string(encoded) + "\n\n"))
 	} else {
