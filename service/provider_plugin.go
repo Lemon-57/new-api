@@ -77,8 +77,8 @@ func PluginFetcher(plugin *jsplugin.LoadedPlugin, baseURL, proxy string, setting
 // instance's own service, not a channel's upstream, so requests use no
 // channel proxy and always verify TLS; a redirect reaches the plugin as it is.
 func RequestPluginFetcher(plugin *jsplugin.LoadedPlugin, config json.RawMessage) jsplugin.Fetcher {
-	return func(ctx context.Context, request jsplugin.FetchRequest) (jsplugin.FetchResponse, error) {
-		hosts := append(slices.Clone(plugin.Meta.AllowedHosts), plugin.ConfigURLHosts(config)...)
+	hosts := append(slices.Clone(plugin.Meta.AllowedHosts), plugin.ConfigURLHosts(config)...)
+	send := func(ctx context.Context, request jsplugin.FetchRequest) (jsplugin.FetchResponse, error) {
 		if err := jsplugin.ValidateServiceURL(request.URL, hosts); err != nil {
 			return jsplugin.FetchResponse{}, err
 		}
@@ -88,6 +88,12 @@ func RequestPluginFetcher(plugin *jsplugin.LoadedPlugin, config json.RawMessage)
 		}
 		return sendPluginFetch(ctx, plugin, client, request)
 	}
+	if plugin.Meta.Key == "content-moderation" && slices.Contains(plugin.Meta.RequiredCapabilities, jsplugin.CapabilityModerationAudit) {
+		if keys := moderationKeys(config); keys != nil {
+			return keys.wrap(send)
+		}
+	}
+	return send
 }
 
 // sendPluginFetch sends one checked utils.fetch request with client. A

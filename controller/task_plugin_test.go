@@ -1098,6 +1098,32 @@ func TestSwitchedOffPluginPricesAreNotPricingIssues(t *testing.T) {
 	assert.Equal(t, []model.ModelPricingIssue{stale("doc-1", key), stale("kling-retired-model", "kling"), stale("retired-model", key)}, readIssues())
 }
 
+func TestModerationUpgradePinsOnlyTheExpectedStoredSource(t *testing.T) {
+	setupTaskPluginControllerTest(t)
+	const key = "content-moderation"
+	cleanupTaskPluginControllerRuntime(t, key)
+	const source = `export const meta = {apiVersion:1,key:"content-moderation",name:"Baseline audit",version:"1.1.0-dual.3",author:{name:"Fixture"}};
+export function ingress() { return {action:"continue"}; }`
+	const baselineHash = "0123456789012345678901234567890123456789012345678901234567890123"
+	require.NoError(t, model.SaveTaskPlugin(&model.TaskPlugin{Key: key, APIVersion: 1, Version: "1.1.0-dual.3", Source: source, SourceHash: baselineHash, Enabled: true}))
+	t.Setenv("CONTENT_MODERATION_REPLACE_BASELINE_HASH", baselineHash)
+	require.NoError(t, syncTaskPluginsOnce())
+	current, ok := jsplugin.DefaultRegistry.GetIgnoringMasterSwitch(key)
+	require.True(t, ok)
+	assert.Contains(t, current.Meta.RequiredCapabilities, jsplugin.CapabilityModerationAudit)
+	stored, err := model.GetTaskPluginVersion(key, "1.1.0-dual.3")
+	require.NoError(t, err)
+	assert.Equal(t, baselineHash, stored.SourceHash)
+	assert.True(t, stored.Enabled)
+
+	t.Setenv("CONTENT_MODERATION_REPLACE_BASELINE_HASH", strings.Repeat("f", 64))
+	require.NoError(t, syncTaskPluginsOnce())
+	current, ok = jsplugin.DefaultRegistry.GetIgnoringMasterSwitch(key)
+	require.True(t, ok)
+	assert.Equal(t, "1.1.0-dual.3", current.Meta.Version)
+	assert.NotContains(t, current.Meta.RequiredCapabilities, jsplugin.CapabilityModerationAudit)
+}
+
 func TestSyncTaskPluginsPublishesOneGenerationForWholeBatch(t *testing.T) {
 	setupTaskPluginControllerTest(t)
 	firstKey := "batch-sync-first"

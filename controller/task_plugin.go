@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -1060,11 +1061,17 @@ func SyncTaskPluginsOnceContext(ctx context.Context) error {
 	nextOverrides := make([]*jsplugin.LoadedPlugin, 0, len(databasePlugins))
 	nextHashes := make(map[string]string, len(databasePlugins))
 	seen := make(map[string]bool, len(databasePlugins))
+	moderationBaseline := os.Getenv("CONTENT_MODERATION_REPLACE_BASELINE_HASH")
 	for _, plugin := range databasePlugins {
 		seen[plugin.Key] = true
-		if current := currentOverrides[plugin.Key]; current != nil && taskPluginSyncState.hashes[plugin.Key] == plugin.SourceHash {
+		useModerationFactory := plugin.Key == "content-moderation" && len(moderationBaseline) == 64 && plugin.SourceHash == moderationBaseline
+		sourceHash := plugin.SourceHash
+		if useModerationFactory {
+			sourceHash = "local-factory:" + sourceHash
+		}
+		if current := currentOverrides[plugin.Key]; current != nil && taskPluginSyncState.hashes[plugin.Key] == sourceHash {
 			nextOverrides = append(nextOverrides, current)
-			nextHashes[plugin.Key] = plugin.SourceHash
+			nextHashes[plugin.Key] = sourceHash
 			logger.LogDebug(
 				ctx,
 				"task_plugin subsystem=sync event=plugin plugin=%q version=%q action=reuse",
@@ -1080,11 +1087,21 @@ func SyncTaskPluginsOnceContext(ctx context.Context) error {
 			plugin.Version,
 		)
 		var compiled *jsplugin.LoadedPlugin
-		source, compileErr := model.GetTaskPluginSource(plugin.Id)
-		if compileErr != nil {
-			compileErr = fmt.Errorf("load source: %w", compileErr)
+		var compileErr error
+		if useModerationFactory {
+			var factory string
+			factory, compileErr = plugins.Source(plugin.Key)
+			if compileErr == nil {
+				compiled, compileErr = jsplugin.CompilePlugin(factory, jsplugin.Options{Key: plugin.Key})
+			}
 		} else {
-			compiled, compileErr = jsplugin.CompilePlugin(string(source), jsplugin.Options{Key: plugin.Key, Version: plugin.Version})
+			var source model.LongText
+			source, compileErr = model.GetTaskPluginSource(plugin.Id)
+			if compileErr != nil {
+				compileErr = fmt.Errorf("load source: %w", compileErr)
+			} else {
+				compiled, compileErr = jsplugin.CompilePlugin(string(source), jsplugin.Options{Key: plugin.Key, Version: plugin.Version})
+			}
 		}
 		if compileErr != nil {
 			retainedIncumbent := false
@@ -1107,7 +1124,7 @@ func SyncTaskPluginsOnceContext(ctx context.Context) error {
 			continue
 		}
 		nextOverrides = append(nextOverrides, compiled)
-		nextHashes[plugin.Key] = plugin.SourceHash
+		nextHashes[plugin.Key] = sourceHash
 		delete(taskPluginSyncState.errors, plugin.Key)
 		logger.LogDebug(
 			ctx,

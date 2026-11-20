@@ -1579,6 +1579,9 @@ func normalizeV1Meta(meta *Meta) error {
 		if name == CapabilitySubmitSSEDelta && !slices.Contains(meta.SubmitResponseTypes, "sse") {
 			return fmt.Errorf("%s requires submitResponseTypes to include sse", name)
 		}
+		if name == CapabilityModerationAudit && meta.Key != "content-moderation" {
+			return fmt.Errorf("%s is reserved for content-moderation", name)
+		}
 		seenCapabilities[name] = true
 	}
 	seenUpstreams := make(map[string]bool, len(meta.Upstreams))

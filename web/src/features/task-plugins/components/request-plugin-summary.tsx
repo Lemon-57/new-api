@@ -47,6 +47,8 @@ export function RequestPluginIconTile(props: {
 /** When a request processing plugin runs, and what a failure of it does. */
 export function RequestPluginRunLine(props: {
   plugin: TaskPluginOption
+  auditMode?: unknown
+  auditErrorPolicy?: unknown
   className?: string
 }) {
   const { t } = useTranslation()
@@ -58,10 +60,15 @@ export function RequestPluginRunLine(props: {
     hooks.length === 0 ||
     hooks.some((hook) => hook !== 'reply' && hook !== 'report')
   const checksReply = hooks.includes('reply')
+  const moderation = props.plugin.key === 'content-moderation'
+  const observes = moderation && props.auditMode === 'observe'
+  const skipsAuditError = moderation && props.auditErrorPolicy === 'skip'
   let failure: string | null = null
   if (checksRequest || checksReply) {
-    if (props.plugin.optional) failure = t('Skipped when it fails')
-    else if (checksRequest) failure = t('Refuses the request when it fails')
+    if (observes) failure = t('Observe in the background')
+    else if (props.plugin.optional || skipsAuditError) {
+      failure = t('Skipped when it fails')
+    } else if (checksRequest) failure = t('Refuses the request when it fails')
     else failure = t('Stops the reply when it fails')
   }
   return (
@@ -88,7 +95,9 @@ export function RequestPluginRunLine(props: {
             aria-hidden='true'
             className={cn(
               'size-1.5 rounded-full',
-              props.plugin.optional ? 'bg-success' : 'bg-warning'
+              props.plugin.optional || observes || skipsAuditError
+                ? 'bg-success'
+                : 'bg-warning'
             )}
           />
           {failure}

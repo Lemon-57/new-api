@@ -1,21 +1,23 @@
 package common
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/smtp"
 	"slices"
 	"strings"
 	"time"
 )
 
-func generateMessageID() (string, error) {
-	split := strings.Split(SMTPFrom, "@")
+func generateMessageID(from string) (string, error) {
+	split := strings.Split(from, "@")
 	if len(split) < 2 {
 		return "", fmt.Errorf("invalid SMTP account")
 	}
-	domain := strings.Split(SMTPFrom, "@")[1]
+	domain := split[1]
 	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), GetRandomString(12), domain), nil
 }
 
@@ -42,25 +44,39 @@ func smtpTLSConfig() *tls.Config {
 }
 
 func newSMTPClient(addr string) (*smtp.Client, error) {
-	if SMTPSSLEnabled || (SMTPPort == 465 && !SMTPStartTLSEnabled) {
-		conn, err := tls.Dial("tcp", addr, smtpTLSConfig())
-		if err != nil {
-			return nil, err
-		}
-		client, err := smtp.NewClient(conn, SMTPServer)
-		if err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-		return client, nil
-	}
+	return newSMTPClientContext(context.Background(), addr)
+}
 
-	client, err := smtp.Dial(addr)
+func newSMTPClientContext(ctx context.Context, addr string) (*smtp.Client, error) {
+	implicitTLS := SMTPSSLEnabled || (SMTPPort == 465 && !SMTPStartTLSEnabled)
+	var conn net.Conn
+	var err error
+	if implicitTLS {
+		dialer := &tls.Dialer{Config: smtpTLSConfig()}
+		conn, err = dialer.DialContext(ctx, "tcp", addr)
+	} else {
+		conn, err = (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}
 	if err != nil {
 		return nil, err
 	}
+	if deadline, hasDeadline := ctx.Deadline(); hasDeadline {
+		if err := conn.SetDeadline(deadline); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+	}
+	host := SMTPServer
+	if !implicitTLS {
+		host, _, _ = net.SplitHostPort(addr)
+	}
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 
-	if SMTPStartTLSEnabled {
+	if !implicitTLS && SMTPStartTLSEnabled {
 		startTLSSupported, _ := client.Extension("STARTTLS")
 		if !startTLSSupported {
 			_ = client.Close()
@@ -76,6 +92,10 @@ func newSMTPClient(addr string) (*smtp.Client, error) {
 }
 
 func SendEmail(subject string, receiver string, content string) error {
+	return SendEmailContext(context.Background(), subject, receiver, content)
+}
+
+func SendEmailContext(ctx context.Context, subject string, receiver string, content string) error {
 	OptionMapRWMutex.RLock()
 	provider := OptionMap["EmailProvider"]
 	resendKey := OptionMap["ResendApiKey"]
@@ -85,15 +105,16 @@ func SendEmail(subject string, receiver string, content string) error {
 	// a failed response does not prove that the first provider did not send.
 	switch provider {
 	case "resend":
-		return sendResendEmail(resendKey, resendFrom, subject, receiver, content)
+		return sendResendEmailContext(ctx, resendKey, resendFrom, subject, receiver, content)
 	case "", "smtp": // Preserve existing installations without a selector.
 	default:
 		return NewMessage("Email sending method must be SMTP or Resend")
 	}
-	if SMTPFrom == "" { // for compatibility
-		SMTPFrom = SMTPAccount
+	from := SMTPFrom
+	if from == "" {
+		from = SMTPAccount
 	}
-	id, err2 := generateMessageID()
+	id, err2 := generateMessageID(from)
 	if err2 != nil {
 		return err2
 	}
@@ -107,12 +128,12 @@ func SendEmail(subject string, receiver string, content string) error {
 		"Date: %s\r\n"+
 		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
 		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
+		receiver, SystemName, from, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
 	auth := getSMTPAuth()
 	addr := fmt.Sprintf("%s:%d", SMTPServer, SMTPPort)
 	to := strings.Split(receiver, ";")
 	var err error
-	client, err := newSMTPClient(addr)
+	client, err := newSMTPClientContext(ctx, addr)
 	if err != nil {
 		return err
 	}
@@ -122,7 +143,7 @@ func SendEmail(subject string, receiver string, content string) error {
 			return err
 		}
 	}
-	if err = client.Mail(SMTPFrom); err != nil {
+	if err = client.Mail(from); err != nil {
 		return err
 	}
 	for _, receiver := range to {

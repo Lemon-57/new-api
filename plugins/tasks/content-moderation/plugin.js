@@ -31,6 +31,24 @@ const CATEGORY_TITLES = [
   { en: "Graphic violence", zh: "血腥暴力" },
 ];
 const CATEGORY_FIELD = { type: "string", title: { en: "Category", zh: "类别" }, enum: CATEGORIES, enumTitles: CATEGORY_TITLES };
+const THRESHOLD_FIELD = {
+  type: "object",
+  title: { en: "Category threshold", zh: "分类阈值" },
+  required: ["category", "threshold"],
+  properties: {
+    category: CATEGORY_FIELD,
+    threshold: { type: "number", title: { en: "Threshold", zh: "阈值" }, minimum: 0, maximum: 1 },
+  },
+};
+const KEY_ROW = {
+  type: "object",
+  title: { en: "Backup key", zh: "备用密钥" },
+  required: ["key"],
+  properties: {
+    key: { type: "string", format: "password", title: { en: "API key", zh: "API 密钥" }, minLength: 1, maxLength: 1024 },
+  },
+};
+const AUDIT_SKIPPED_NOTICE = { en: "The audit service did not return a valid result; this check was skipped", zh: "审核服务未返回有效结果，本次检查已跳过" };
 const TYPESAFE_RULES = {
   harassment: [0.98, "Does it attack or harass a person or group? Do not count criticism of conduct alone."],
   "harassment/threatening": [0.9, "Does it harass a person or group with a credible threat of serious physical harm?"],
@@ -64,7 +82,8 @@ export const meta = {
     en: "Checks content with OpenAI Moderations or TypeSafe AI (Jev) and rejects flagged requests",
     zh: "使用 OpenAI 审核或 TypeSafe AI（Jev）检查内容，拒绝被标记的请求",
   },
-  version: "1.1.0-dual.3",
+  version: "1.2.0",
+  requiredCapabilities: ["moderation-audit@1"],
   author: { name: "QuantumNous" },
   configSchema: {
     type: "object",
@@ -98,6 +117,13 @@ export const meta = {
         examples: ["sk-..."],
         visibleWhen: { engine: "openai" },
       },
+      apiKeys: {
+        type: "array",
+        title: { en: "OpenAI backup keys", zh: "OpenAI 审核备用密钥" },
+        maxItems: 99,
+        visibleWhen: { engine: "openai" },
+        items: KEY_ROW,
+      },
       model: {
         type: "string",
         title: { en: "Moderation model", zh: "审核模型" },
@@ -130,6 +156,13 @@ export const meta = {
         },
         maxLength: 1024,
         visibleWhen: { engine: "typesafe" },
+      },
+      typeSafeApiKeys: {
+        type: "array",
+        title: { en: "TypeSafe backup keys", zh: "TypeSafe 审核备用密钥" },
+        maxItems: 99,
+        visibleWhen: { engine: "typesafe" },
+        items: KEY_ROW,
       },
       typeSafeModel: {
         type: "string",
@@ -166,6 +199,18 @@ export const meta = {
         items: CATEGORY_FIELD,
         visibleWhen: { engine: "openai" },
       },
+      openAIThresholds: {
+        type: "array",
+        title: { en: "OpenAI risk thresholds", zh: "OpenAI 风险阈值" },
+        description: {
+          en: "Use a score threshold for listed categories and the upstream flags for the rest",
+          zh: "为配置了阈值的类别按分数判断，其余类别沿用上游标记",
+        },
+        default: [],
+        maxItems: CATEGORIES.length,
+        visibleWhen: { engine: "openai" },
+        items: THRESHOLD_FIELD,
+      },
       typeSafeCategories: {
         type: "array",
         title: { en: "TypeSafe blocked categories", zh: "TypeSafe 拦截类别" },
@@ -186,15 +231,151 @@ export const meta = {
         examples: [CATEGORIES.map((category) => ({ category, threshold: TYPESAFE_RULES[category][0] }))],
         maxItems: CATEGORIES.length,
         visibleWhen: { engine: "typesafe" },
+        items: THRESHOLD_FIELD,
+      },
+      blockMessage: {
+        type: "string",
+        title: { en: "Custom block message", zh: "自定义拦截提示" },
+        description: { en: "Message shown to the caller when content is flagged", zh: "内容命中时返回给调用方的提示" },
+        maxLength: 256,
+      },
+      blockStatus: {
+        type: "integer",
+        title: { en: "Block HTTP status", zh: "拦截 HTTP 状态码" },
+        description: { en: "Status used before HTTP response headers are sent", zh: "尚未发送 HTTP 响应头时使用的状态码" },
+        minimum: 400,
+        maximum: 599,
+      },
+      auditTimeoutMs: {
+        type: "integer",
+        title: { en: "Audit timeout (ms)", zh: "单次审核超时（毫秒）" },
+        description: { en: "Time limit for one attempt", zh: "每次审核尝试可用的时间上限" },
+        minimum: 1,
+        maximum: 15000,
+      },
+      auditRetryCount: {
+        type: "integer",
+        title: { en: "Audit retries", zh: "审核重试次数" },
+        description: { en: "Extra attempts after a retryable audit failure", zh: "发生可重试的审核故障后额外尝试的次数" },
+        minimum: 0,
+        maximum: 5,
+      },
+      auditTotalTimeoutMs: {
+        type: "integer",
+        title: { en: "Audit time budget (ms)", zh: "单轮审核总时限（毫秒）" },
+        description: { en: "Time available to all attempts of one hook call", zh: "一次审核钩子内所有尝试共用的时间上限" },
+        minimum: 1,
+        maximum: 15000,
+      },
+      auditErrorPolicy: {
+        type: "string",
+        title: { en: "On audit error", zh: "审核出错时" },
+        enum: ["reject", "skip"],
+        enumTitles: [
+          { en: "Reject request or stop reply", zh: "拒绝请求或中止回复" },
+          { en: "Continue without an audit result", zh: "审核无结果时放行" },
+        ],
+        default: "reject",
+      },
+      auditMode: {
+        type: "string",
+        title: { en: "Audit mode", zh: "审核模式" },
+        enum: ["enforce", "observe"],
+        enumTitles: [
+          { en: "Enforce synchronously", zh: "同步拦截" },
+          { en: "Observe in the background", zh: "后台观察" },
+        ],
+        default: "enforce",
+      },
+      auditSampleRate: {
+        type: "integer",
+        title: { en: "Audit sampling rate (%)", zh: "审核采样率（%）" },
+        description: { en: "Portion of in-scope requests selected for audit", zh: "适用范围内被选中审核的请求比例" },
+        minimum: 0,
+        maximum: 100,
+        default: 100,
+      },
+      auditWorkers: {
+        type: "integer",
+        title: { en: "Background audit workers", zh: "后台审核 Worker 数" },
+        minimum: 1,
+        maximum: 8,
+        default: 2,
+      },
+      auditQueueLimit: {
+        type: "integer",
+        title: { en: "Background audit queue size", zh: "后台审核队列大小" },
+        minimum: 1,
+        maximum: 512,
+        default: 64,
+      },
+      auditStoreExcerpt: {
+        type: "boolean",
+        title: { en: "Store redacted text excerpts", zh: "保存脱敏文本摘要" },
+        description: { en: "Whether audit records keep a short excerpt of the submitted text", zh: "审核记录是否保留送审文本的简短摘要" },
+        default: false,
+      },
+      auditRecordNonHits: {
+        type: "boolean",
+        title: { en: "Record allowed audits", zh: "记录未命中审核" },
+        default: false,
+      },
+      auditHashPrecheck: {
+        type: "boolean",
+        title: { en: "Check previous risk hashes", zh: "检查历史风险哈希" },
+        description: { en: "Whether a previous text match can block without calling the audit service", zh: "已命中的相同文本能否在不请求审核服务时拦截" },
+        default: false,
+      },
+      auditHitRetentionDays: {
+        type: "integer",
+        title: { en: "Keep hits for (days)", zh: "命中记录保留（天）" },
+        minimum: 1,
+        maximum: 3650,
+        default: 180,
+      },
+      auditNonHitRetentionDays: {
+        type: "integer",
+        title: { en: "Keep non-hits for (days)", zh: "非命中记录保留（天）" },
+        minimum: 1,
+        maximum: 3,
+        default: 3,
+      },
+      auditOnlyRecordUsers: {
+        type: "array",
+        title: { en: "Users to audit without enforcement", zh: "仅记录、不处置的用户" },
+        description: { en: "User IDs checked in the background without blocking or notifications", zh: "在后台审核但不拦截、不通知的用户 ID" },
+        maxItems: 200,
         items: {
           type: "object",
-          title: { en: "Category threshold", zh: "分类阈值" },
-          required: ["category", "threshold"],
-          properties: {
-            category: CATEGORY_FIELD,
-            threshold: { type: "number", title: { en: "Threshold", zh: "阈值" }, minimum: 0, maximum: 1 },
-          },
+          title: { en: "Log-only user", zh: "仅记录用户" },
+          required: ["userId"],
+          properties: { userId: { type: "integer", title: { en: "User ID", zh: "用户 ID" }, minimum: 1, maximum: 2147483647 } },
         },
+      },
+      auditEmailOnHit: {
+        type: "boolean",
+        title: { en: "Email the user on an audit hit", zh: "命中后向用户发邮件" },
+        default: false,
+      },
+      auditEmailOnBan: {
+        type: "boolean",
+        title: { en: "Email the user on automatic suspension", zh: "自动封禁后向用户发邮件" },
+        default: false,
+      },
+      auditBanHits: {
+        type: "integer",
+        title: { en: "Hits before automatic suspension", zh: "自动封禁所需的命中次数" },
+        description: { en: "Zero leaves automatic suspension disabled", zh: "填零时不自动封禁" },
+        minimum: 0,
+        maximum: 1000,
+        default: 0,
+      },
+      auditBanWindowHours: {
+        type: "integer",
+        title: { en: "Hit counting window (hours)", zh: "累计命中的时间窗口（小时）" },
+        minimum: 1,
+        maximum: 2160,
+        default: 720,
       },
       replies: {
         type: "boolean",
@@ -237,10 +418,22 @@ const MODERATION_PATH = "/v1/moderations";
 const SYSTEM_ONE_PATH = "/v1/systemone";
 
 export function validateConfig(config) {
-  const seen = new Set();
-  for (const entry of config.typeSafeThresholds || []) {
-    if (seen.has(entry.category)) throw new Error("A TypeSafe category may have only one threshold");
-    seen.add(entry.category);
+  for (const [engine, thresholds] of [
+    ["TypeSafe", config.typeSafeThresholds],
+    ["OpenAI", config.openAIThresholds],
+  ]) {
+    const seen = new Set();
+    for (const entry of thresholds || []) {
+      if (seen.has(entry.category)) throw new Error(`A ${engine} category may have only one threshold`);
+      seen.add(entry.category);
+    }
+  }
+  for (const character of config.blockMessage || "") {
+    const code = character.charCodeAt(0);
+    if (code < 32 || code === 127) throw new Error("The block message must be plain single-line text");
+  }
+  for (const row of [...(config.apiKeys || []), ...(config.typeSafeApiKeys || [])]) {
+    if (row.key.trim() === "" || /\s/.test(row.key.trim())) throw new Error("A backup audit key must not be empty or contain whitespace");
   }
 }
 
@@ -342,16 +535,22 @@ function userMessages(format, body) {
 // request: every flagged one when no category is listed, otherwise those with
 // a listed category. Known categories come first, in the reference order; a
 // flagged text without a true category counts as "flagged".
-function blockingCategories(results, listed) {
+function blockingCategories(results, listed, thresholds) {
   const counts = new Map();
   const add = (name) => counts.set(name, (counts.get(name) || 0) + 1);
   for (const result of results) {
     if (!result || typeof result !== "object") throw new Error("moderation API returned an invalid result");
-    if (listed.length === 0 && result.flagged !== true) continue;
     const categories = result.categories && typeof result.categories === "object" ? result.categories : {};
-    const names = Object.keys(categories).filter((name) => categories[name] === true && (listed.length === 0 || listed.includes(name)));
-    names.forEach(add);
-    if (listed.length === 0 && names.length === 0) add("flagged");
+    const names = Object.keys(categories).filter((name) => categories[name] === true);
+    if (listed.length !== 0 || result.flagged === true) {
+      names.filter((name) => !thresholds.has(name) && (listed.length === 0 || listed.includes(name))).forEach(add);
+    }
+    for (const [name, threshold] of thresholds) {
+      const score = result.category_scores?.[name];
+      if (!Number.isFinite(score) || score < 0 || score > 1) throw new Error("moderation API returned an invalid score for " + name);
+      if (score >= threshold) add(name);
+    }
+    if (thresholds.size === 0 && listed.length === 0 && result.flagged === true && names.length === 0) add("flagged");
   }
   const rank = (name) => (CATEGORIES.includes(name) ? CATEGORIES.indexOf(name) : CATEGORIES.length);
   return [...counts.keys()].sort((a, b) => rank(a) - rank(b)).map((name) => ({ name, count: counts.get(name) }));
@@ -370,7 +569,12 @@ function moderate(config, input) {
   const results = response.body && typeof response.body === "object" ? response.body.results : undefined;
   if (!Array.isArray(results)) throw new Error("moderation API returned no results");
 
-  return blockingCategories(results, config.categories || []).slice(0, 64);
+  const listed = config.categories || [];
+  const thresholds = new Map(
+    (config.openAIThresholds || []).filter((entry) => listed.length === 0 || listed.includes(entry.category)).map((entry) => [entry.category, entry.threshold])
+  );
+  if (thresholds.size > 0 && results.length === 0) throw new Error("moderation API returned no scored results");
+  return blockingCategories(results, listed, thresholds).slice(0, 64);
 }
 
 function moderateTypeSafe(config, text) {
@@ -486,6 +690,19 @@ function findingsOf(blocking) {
   return blocking.map((item) => ({ rule: item.name.slice(0, 256), category: item.name.slice(0, 256), count: item.count }));
 }
 
+function auditInputs(config, inputs) {
+  try {
+    for (const input of inputs) {
+      const blocking = moderate(config, input);
+      if (blocking.length > 0) return blocking;
+    }
+    return [];
+  } catch (error) {
+    if (config.auditErrorPolicy !== "skip") throw error;
+    return null;
+  }
+}
+
 // Images go one per moderation request, at most MAX_IMAGES per request and
 // each at most MAX_IMAGE_BYTES; an image in the request goes as data, one
 // the request names by URL as that URL. A document goes as text, at most
@@ -533,25 +750,24 @@ export function ingress(ctx, req) {
       if (read && typeof read.text === "string" && read.text.trim() !== "") texts.push(read.text);
     }
   }
-  let blocking = [];
-  let requests = 0;
+  let inputs = [];
   if (texts.length > 0) {
-    const inputs = textInputs(config, texts, config.scope !== "all_user" && texts.length === 1, MAX_FETCHES);
+    inputs = textInputs(config, texts, config.scope !== "all_user" && texts.length === 1, MAX_FETCHES);
     if (inputs === null) {
       return { action: "reject", code: "moderation.too_long", message: "The request is too long for content moderation" };
     }
-    for (; blocking.length === 0 && requests < inputs.length; requests++) blocking = moderate(config, inputs[requests]);
   }
-  // Images take the requests the text left.
-  for (let i = 0; blocking.length === 0 && i < images.length && requests < MAX_FETCHES; i++, requests++) {
-    blocking = moderate(config, [{ type: "image_url", image_url: { url: images[i] } }]);
+  for (const image of images.slice(0, MAX_FETCHES - inputs.length)) {
+    inputs.push([{ type: "image_url", image_url: { url: image } }]);
   }
+  const blocking = auditInputs(config, inputs);
+  if (blocking === null) return { action: "continue", notice: AUDIT_SKIPPED_NOTICE };
   if (blocking.length === 0) return { action: "continue" };
   return {
     action: "reject",
     code: "moderation.flagged",
     ruleId: blocking[0].name.slice(0, 256),
-    message: "The request was flagged by content moderation",
+    message: config.blockMessage?.trim() || "The request was flagged by content moderation",
     findings: findingsOf(blocking),
   };
 }
@@ -575,13 +791,13 @@ export function reply(ctx, res) {
   if (inputs === null) {
     return { action: "stop", code: "moderation.too_long", message: "The reply is too long for content moderation" };
   }
-  let blocking = [];
-  for (let i = 0; blocking.length === 0 && i < inputs.length; i++) blocking = moderate(config, inputs[i]);
+  const blocking = auditInputs(config, inputs);
+  if (blocking === null) return { action: "continue", notice: AUDIT_SKIPPED_NOTICE };
   if (blocking.length === 0) return { action: "continue" };
   return {
     action: "stop",
     code: "moderation.flagged",
-    message: "The reply was flagged by content moderation",
+    message: config.blockMessage?.trim() || "The reply was flagged by content moderation",
     findings: findingsOf(blocking),
   };
 }

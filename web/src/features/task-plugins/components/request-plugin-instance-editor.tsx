@@ -202,13 +202,15 @@ function InstanceEditorDialog(props: RequestPluginInstanceEditorProps) {
     models.length > 0 ? 'chosen' : 'all'
   )
   const plugin = props.plugins.find((item) => item.key === pluginKey)
-  const [draft, setDraft] = useState(() =>
-    toRequestPluginConfigDraft(
-      plugin?.configSchema,
-      props.instance?.config ??
-        requestPluginConfigDefaults(plugin?.configSchema)
-    )
-  )
+  const [draft, setDraft] = useState(() => {
+    const defaults = requestPluginConfigDefaults(plugin?.configSchema)
+    const saved = props.instance?.config
+    const initial =
+      pluginKey === 'content-moderation'
+        ? { ...defaults, ...saved }
+        : (saved ?? defaults)
+    return toRequestPluginConfigDraft(plugin?.configSchema, initial)
+  })
   // Problems show as the admin edits; the rest show once a save is tried.
   const [showAllErrors, setShowAllErrors] = useState(false)
   // An instance whose plugin is gone keeps its saved settings untouched.
@@ -334,7 +336,13 @@ function InstanceEditorDialog(props: RequestPluginInstanceEditorProps) {
             </>
           )}
         </span>
-        {plugin && <RequestPluginRunLine plugin={plugin} />}
+        {plugin && (
+          <RequestPluginRunLine
+            plugin={plugin}
+            auditMode={draft.auditMode}
+            auditErrorPolicy={draft.auditErrorPolicy}
+          />
+        )}
       </span>
     </span>
   )

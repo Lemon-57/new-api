@@ -20,7 +20,7 @@
       {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"enum": ["openai_video", "openai_image"]}, "models": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}
     ]}},
     "submitResponseTypes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["json", "sse"]}},
-    "requiredCapabilities": {"type": "array", "uniqueItems": true, "items": {"enum": ["json-clone@1", "submit-sse-delta@1", "json-order@1", "duration-auto@1"]}},
+    "requiredCapabilities": {"type": "array", "uniqueItems": true, "items": {"enum": ["json-clone@1", "submit-sse-delta@1", "json-order@1", "duration-auto@1", "moderation-audit@1"]}},
     "routes": {"type": "array", "items": {"$ref": "#/$defs/route"}}, "usageSchema": {"type": "object", "additionalProperties": {"$ref": "#/$defs/usageField"}}, "usageExamples": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["label", "facts"], "properties": {"label": {"type": "string"}, "facts": {"type": "object"}}}}, "usageProfiles": {"type": "array", "items": {"$ref": "#/$defs/usageProfile"}}, "auth": {},
     "relay": {"type": "array", "items": {"$ref": "#/$defs/relayRoute"}, "description": "The provider part: routes a type-61 channel bound to the plugin relays. A plugin without an exported buildSubmitRequest needs it or an exported stage hook, and must not declare the task fields; the host checks this at load."},
     "configSchema": {"$ref": "#/$defs/configSchema"},

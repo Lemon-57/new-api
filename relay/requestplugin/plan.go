@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -269,6 +270,7 @@ type Rejection struct {
 	Instance string `json:"instance"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+	status   int
 }
 
 type Failure struct {
@@ -333,8 +335,18 @@ func (p *Plan) Run(ctx context.Context, call Call) Outcome {
 			outcome.Record = append(outcome.Record, entry)
 			continue
 		}
+		audit := service.NewModerationAudit(ctx, plugin, instance, call.Stage, call.Model, call.User.ID)
+		if audit != nil && !audit.Sampled() {
+			continue
+		}
+		if audit != nil && audit.Observes() {
+			queueModerationIngress(audit, call, instance, plugin, outcome.Body)
+			step.Action = "continue"
+			outcome.Steps = append(outcome.Steps, step)
+			continue
+		}
 		started := time.Now()
-		next, class, err := p.runInstance(ctx, call, instance, plugin, outcome.Body, outcome.Headers)
+		next, class, err := p.runInstance(ctx, call, instance, plugin, outcome.Body, outcome.Headers, audit)
 		step.DurationMS = time.Since(started).Milliseconds()
 		for _, finding := range next.findings {
 			step.Findings = append(step.Findings, relaycommon.RequestPluginFinding{Rule: finding.Rule, Category: finding.Category, Count: finding.Count})
@@ -362,7 +374,7 @@ func (p *Plan) Run(ctx context.Context, call Call) Outcome {
 			outcome.Steps = append(outcome.Steps, step)
 			next.record.Rejected = &relaycommon.RequestPluginRejected{Code: next.reject.Code}
 			outcome.Record = append(outcome.Record, next.record)
-			outcome.Rejected = &Rejection{Instance: instance.ID, Code: next.reject.Code, Message: next.reject.Message}
+			outcome.Rejected = &Rejection{Instance: instance.ID, Code: next.reject.Code, Message: next.reject.Message, status: moderationBlockStatus(instance, next.reject.Code)}
 			return outcome
 		}
 		step.Action, step.Effects = "continue", next.effects
@@ -393,7 +405,7 @@ type change struct {
 
 // runInstance calls one instance on body and checks its effects. The error
 // class names the failure for the audit.
-func (p *Plan) runInstance(ctx context.Context, call Call, instance *request_plugin_setting.Instance, plugin *jsplugin.LoadedPlugin, body []byte, headers []requestpatch.Effect) (change, string, error) {
+func (p *Plan) runInstance(ctx context.Context, call Call, instance *request_plugin_setting.Instance, plugin *jsplugin.LoadedPlugin, body []byte, headers []requestpatch.Effect, audit *service.ModerationAudit) (change, string, error) {
 	view, media := body, []inlineMedia(nil)
 	if call.form == nil {
 		view, media = scanMedia(body)
@@ -412,7 +424,12 @@ func (p *Plan) runInstance(ctx context.Context, call Call, instance *request_plu
 	hookCtx := ctx
 	if call.Stage == StageIngress || call.Stage == StageEgress {
 		// They may reach the instance's own service, such as a moderation API.
-		hookCtx = jsplugin.WithFetcher(ctx, service.RequestPluginFetcher(plugin, instance.Config))
+		fetcher := service.RequestPluginFetcher(plugin, instance.Config)
+		if audit != nil {
+			audit.ConfigureCapture(plugin, instance)
+			fetcher = audit.Fetcher(fetcher)
+		}
+		hookCtx = jsplugin.WithFetcher(ctx, fetcher)
 	}
 	attachments := newCallMedia(&p.media, view, media, call.form)
 	result, err := plugin.CallTransform(hookCtx, jsplugin.TransformContext{
@@ -431,6 +448,20 @@ func (p *Plan) runInstance(ctx context.Context, call Call, instance *request_plu
 		Config: instance.Config,
 		Media:  attachments,
 	}, request)
+	if audit != nil {
+		if category, hit := audit.HistoryHit(); hit {
+			message := strings.TrimSpace(gjson.GetBytes(instance.Config, "blockMessage").Str)
+			if message == "" {
+				message = "The request was flagged by content moderation"
+			}
+			result = jsplugin.TransformResult{Action: "reject", Code: "moderation.flagged", Message: message, RuleID: category}
+			if category != "" {
+				result.Findings = []jsplugin.TransformFinding{{Rule: category, Category: category, Count: 1}}
+			}
+			err = nil
+		}
+		audit.Record(result.Action, result.Code, result.RuleID, err != nil, len(result.Notice) > 0)
+	}
 	if err != nil {
 		class := jsplugin.TransformErrorFailed
 		var transformErr *jsplugin.TransformError

@@ -98,3 +98,7 @@ channel.upstream_update_failed_channels: "失敗管道 ID（顯示 {{.Shown}}/{{
 channel.upstream_update_more_omitted: "（其餘 {{.Count}} 個已省略）"
 
 channel.notify_scheduled_subject: "渠道「{{.Name}}」(#{{.Id}}) 外掛通知"
+moderation.hit_subject: "內容審核提醒"
+moderation.hit_body: "你的帳戶有一筆請求命中了內容規則。如認為有誤判，請聯絡站點管理員並提供請求 ID {{.RequestID}}。"
+moderation.ban_subject: "帳戶因內容審核被暫停"
+moderation.ban_body: "你的帳戶因多次命中內容規則而被暫停。如需覆核，請聯絡站點管理員並提供請求 ID {{.RequestID}}。"

@@ -16,6 +16,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/request_plugin_setting"
 
 	"github.com/gin-gonic/gin"
@@ -283,7 +284,7 @@ func (r *Realtime) ClientEvent(eventType string, message []byte) (patched []byte
 	}
 	call := r.call
 	call.Stage, call.Format, call.Body = StageIngress, string(types.RelayFormatOpenAIResponses), view
-	outcome := r.plan.Run(r.ctx, call)
+	outcome := r.plan.Run(service.WithModerationEventScope(r.ctx, common.NewRequestId()), call)
 	r.add(auditSteps(outcome), outcome.Record)
 	apiErr := settle(r.c, outcome)
 	if apiErr == nil && !bytes.Equal(outcome.Body, view) {
@@ -510,7 +511,7 @@ func (r *Realtime) start(id string) *realtimeResponse {
 		response.capture = &responseCapture{socket: true}
 	}
 	if len(r.reply) > 0 {
-		check := newReplyCheck(r.ctx, r.plan, r.reply)
+		check := newReplyCheck(service.WithModerationEventScope(r.ctx, id), r.plan, r.reply)
 		check.call, check.stream = r.call, true
 		response.writer = &replyWriter{c: r.c, format: types.RelayFormatOpenAIRealtime, check: check, mode: replyStream, recordAt: -1,
 			socket: func(message []byte) { response.out(r, message) }}

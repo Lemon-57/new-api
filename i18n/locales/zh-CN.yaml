@@ -98,3 +98,7 @@ channel.upstream_update_failed_channels: "失败渠道 ID（展示 {{.Shown}}/{{
 channel.upstream_update_more_omitted: "（其余 {{.Count}} 个已省略）"
 
 channel.notify_scheduled_subject: "渠道“{{.Name}}” (#{{.Id}}) 插件通知"
+moderation.hit_subject: "内容审核提醒"
+moderation.hit_body: "你的账户有一条请求命中了内容规则。如认为存在误判，请联系站点管理员并提供请求 ID {{.RequestID}}。"
+moderation.ban_subject: "账户因内容审核被暂停"
+moderation.ban_body: "你的账户因多次命中内容规则而被暂停。如需复核，请联系站点管理员并提供请求 ID {{.RequestID}}。"

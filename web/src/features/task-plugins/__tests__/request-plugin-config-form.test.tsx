@@ -170,6 +170,26 @@ const moderationPlugin: TaskPluginOption = {
         enumTitles: ['OpenAI', 'TypeSafe'],
         default: 'openai',
       },
+      apiKeys: {
+        type: 'array',
+        title: 'OpenAI backup keys',
+        visibleWhen: { engine: ['openai'] },
+        items: {
+          type: 'object',
+          title: 'Backup key',
+          required: ['key'],
+          properties: {
+            key: { type: 'string', title: 'API key', format: 'password' },
+          },
+        },
+      },
+      auditMode: {
+        type: 'string',
+        title: 'Audit mode',
+        enum: ['enforce', 'observe'],
+        enumTitles: ['Enforce synchronously', 'Observe in the background'],
+        default: 'enforce',
+      },
       typeSafeThresholds: {
         type: 'array',
         title: 'TypeSafe risk thresholds',
@@ -239,6 +259,38 @@ async function openEditor(pluginName: string) {
   const dialog = screen.getByRole('dialog')
   return { user, dialog, onSave }
 }
+
+test('keeps a masked backup key when switching engines and saving', async () => {
+  const { user, dialog, onSave } = await openEditor('Content moderation')
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Add Backup key' })
+  )
+  const backup = within(dialog).getByRole('listitem', { name: 'Backup key 1' })
+  const key = within(backup).getByLabelText(/^API key/, { selector: 'input' })
+  expect(key).toHaveAttribute('type', 'password')
+  await user.type(key, 'sample-backup-key')
+  await user.click(
+    within(dialog).getByRole('combobox', { name: 'Moderation engine' })
+  )
+  await user.click(await screen.findByRole('option', { name: 'TypeSafe' }))
+  expect(
+    within(dialog).queryByRole('listitem', { name: 'Backup key 1' })
+  ).not.toBeInTheDocument()
+  await user.click(
+    within(dialog).getByRole('combobox', { name: 'Moderation engine' })
+  )
+  await user.click(await screen.findByRole('option', { name: 'OpenAI' }))
+  const retained = within(dialog).getByRole('listitem', {
+    name: 'Backup key 1',
+  })
+  expect(
+    within(retained).getByLabelText(/^API key/, { selector: 'input' })
+  ).toHaveValue('sample-backup-key')
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+  expect(onSave.mock.calls[0][0].config.apiKeys).toEqual([
+    { key: 'sample-backup-key' },
+  ])
+})
 
 async function chooseMode(
   user: ReturnType<typeof userEvent.setup>,

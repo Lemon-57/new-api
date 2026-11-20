@@ -30,6 +30,7 @@ type FetchRequest struct {
 	// bytes long.
 	BodyStream io.Reader
 	BodySize   int64
+	ReplayBody func() (io.Reader, int64, error)
 }
 
 type FetchResponse struct {
@@ -123,6 +124,10 @@ func (c *runtimeCall) fetch(r *moejs.Realm, argument moejs.Value) (moejs.Value, 
 		if request.BodyStream, request.BodySize, err = source.FetchBody(request.Body); err != nil {
 			return moejs.Undefined(), r.TypeError("utils.fetch: %s", err)
 		}
+		if request.BodyStream != nil && c.engine.key == "content-moderation" && c.hook == "ingress" {
+			body := request.Body
+			request.ReplayBody = func() (io.Reader, int64, error) { return source.FetchBody(body) }
+		}
 	}
 
 	var response FetchResponse
@@ -131,7 +136,7 @@ func (c *runtimeCall) fetch(r *moejs.Realm, argument moejs.Value) (moejs.Value, 
 		started := time.Now()
 		response, err = c.fetcher(fetchContext, request)
 		c.fetchTime += time.Since(started)
-		if err != nil && fetchContext.Err() != nil {
+		if fetchContext.Err() != nil {
 			err = context.Cause(fetchContext)
 		}
 		cancel()

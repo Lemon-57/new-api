@@ -492,7 +492,7 @@ func settle(c *gin.Context, outcome Outcome) *types.NewAPIError {
 		if message == "" {
 			message = i18n.T(c, i18n.MsgRelayRequestRejected)
 		}
-		return types.NewErrorWithStatusCode(fmt.Errorf("%s (code: %s)", message, rejected.Code), types.ErrorCodeRequestRejected, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+		return types.NewErrorWithStatusCode(fmt.Errorf("%s (code: %s)", message, rejected.Code), types.ErrorCodeRequestRejected, max(http.StatusBadRequest, rejected.status), types.ErrOptionWithSkipRetry())
 	}
 	if outcome.Failed != nil {
 		if outcome.Failed.tooLarge {
@@ -633,6 +633,7 @@ type DryRunResult struct {
 // DryRun runs the four stages on input without sending or charging
 // anything. It stops at a rejection or a failure that stops the request.
 func DryRun(ctx context.Context, input DryRunInput) DryRunResult {
+	ctx = service.WithIsolatedModerationKeyPool(ctx)
 	result := DryRunResult{Steps: []Step{}, Record: []relaycommon.RequestPluginRecord{}, Body: input.Body, Headers: DryRunHeaders{Set: map[string]string{}, Remove: []string{}}}
 	result.ReasoningEffortBefore = input.ModifierEffort
 	if result.ReasoningEffortBefore == "" {

@@ -291,6 +291,9 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			requestPluginRoute.PUT("/instances", controller.UpdateRequestPluginInstances)
 			requestPluginRoute.POST("/dry_run", controller.DryRunRequestPlugins)
+			requestPluginRoute.GET("/moderation/audits", controller.ListContentModerationAudits)
+			requestPluginRoute.GET("/moderation/status", controller.ContentModerationStatus)
+			requestPluginRoute.POST("/moderation/audits/:id/release", controller.ReleaseContentModerationAuditSuspension)
 		}
 		registerChannelRoutes(apiRouter)
 		registerAuthzRoutes(apiRouter)

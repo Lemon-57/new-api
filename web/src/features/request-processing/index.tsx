@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { ArrowDown, ArrowUp, Pencil, Play, Plus, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -287,6 +288,13 @@ export function RequestProcessing() {
         </SectionPageLayout.Title>
         <SectionPageLayout.Actions>
           <NodeSyncIndicator topics={['options']} />
+          <Button
+            variant='outline'
+            nativeButton={false}
+            render={<Link to='/request-processing/audit' />}
+          >
+            {t('Content audit records')}
+          </Button>
           <Button
             variant='outline'
             disabled={!instancesQuery.isSuccess}
